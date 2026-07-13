@@ -221,14 +221,11 @@ class YoloModel:
         x2 = cx + w / 2.0
         y2 = cy + h / 2.0
         # Снимаем letterbox: вычитаем pad, делим на scale, клипаем в кадр.
-        x1 = (x1 - pad_w) / scale
-        y1 = (y1 - pad_h) / scale
-        x2 = (x2 - pad_w) / scale
-        y2 = (y2 - pad_h) / scale
-        x1 = float(np.clip(x1, 0, orig_w))
-        y1 = float(np.clip(y1, 0, orig_h))
-        x2 = float(np.clip(x2, 0, orig_w))
-        y2 = float(np.clip(y2, 0, orig_h))
+        # Координаты — векторы длины K (по числу боксов); clip векторный.
+        x1 = np.clip((x1 - pad_w) / scale, 0, orig_w)
+        y1 = np.clip((y1 - pad_h) / scale, 0, orig_h)
+        x2 = np.clip((x2 - pad_w) / scale, 0, orig_w)
+        y2 = np.clip((y2 - pad_h) / scale, 0, orig_h)
 
         # NMS per-class.
         keep = self._nms_per_class(

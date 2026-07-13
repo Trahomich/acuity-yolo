@@ -34,7 +34,7 @@ services:
       dockerfile: Dockerfile
       args:
         EXPORT_MODEL: ${EXPORT_MODEL:-1}
-        MODEL_SPEC: ${MODEL_SPEC:-yolov12n.pt}
+        MODEL_SPEC: ${MODEL_SPEC:-yolo12n.pt}
         IMGSZ: ${IMGSZ:-640}
     image: acuity-yolo/worker:dev
     container_name: acuity-yolo-worker

@@ -44,7 +44,7 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 FROM python:3.11-slim AS exporter
 
 ARG EXPORT_MODEL=1
-ARG MODEL_SPEC=yolov12n.pt
+ARG MODEL_SPEC=yolo12n.pt
 ARG IMGSZ=640
 ARG OPSET=12
 
@@ -55,16 +55,30 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /export
 COPY export_model.py ./
 
+# Системные библиотеки для opencv-python-headless (ultralytics тянет cv2):
+# без libxcb/libGL импорт cv2 падает на этапе экспорта.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+        libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libxcb1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Готовим целевой каталог заранее (COPY --from=exporter требует его наличия
 # даже если экспорт выключен — тогда воркер стартует not-ready).
 RUN mkdir -p /export/models
 
-# Если EXPORT_MODEL=1 — ставим ultralytics и экспортируем YOLO в ONNX через
-# export_model.py (он падает с ненулевым exit при ошибке импорта/экспорта,
-# копирует .onnx в --out). Иначе каталог остаётся пустым — воркер стартует
-# not-ready, модель примонтируется volume или кладётся вручную.
+# Если EXPORT_MODEL=1 — ставим ultralytics (CPU-only torch, без CUDA-депов)
+# и экспортируем YOLO в ONNX через export_model.py (он падает с ненулевым
+# exit при ошибке импорта/экспорта, копирует .onnx в --out). Иначе каталог
+# остаётся пустым — воркер стартует not-ready, модель примонтируется volume
+# или кладётся вручную.
+#
+# torch CPU-only ставим с PyPI-индекса CPU-сборок, чтобы не тянуть ~3 ГБ
+# CUDA-пакетов (нам для экспорта/инференса нужен только CPU). Порядок важен:
+# сначала torch CPU, потом ultralytics (он не переустановит torch, т.к. тот
+# уже удовлетворяет зависимости).
 RUN if [ "$EXPORT_MODEL" = "1" ]; then \
-        pip install --upgrade pip && pip install ultralytics onnx onnxslim && \
+        pip install --upgrade pip && \
+        pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision && \
+        pip install ultralytics onnx onnxslim && \
         python export_model.py --model "${MODEL_SPEC}" --imgsz "${IMGSZ}" --opset "${OPSET}" --out /export/models && \
         ls -la /export/models/; \
     else \
