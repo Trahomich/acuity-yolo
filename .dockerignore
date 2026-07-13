@@ -1,0 +1,24 @@
+# .dockerignore — не тащим в build-context образа.
+
+.git
+.gitignore
+.github
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+tests/
+*.md
+!README.md
+
+# Модели из локальной разработки — экспортируем в build (см. Dockerfile).
+models/*.pt
+models/*.onnx
+models/*.engine

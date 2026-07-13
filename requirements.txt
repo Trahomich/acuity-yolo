@@ -1,0 +1,22 @@
+# requirements.txt — runtime-зависимости inference-воркера acuity-yolo.
+#
+# ultralytics НЕ включён сюда намеренно (тяжёлый, нужен только для экспорта
+# модели — см. export_model.py). В рантайме воркер использует только
+# onnxruntime + opencv + numpy + fastapi.
+#
+# Execution Provider:
+#   cpu (по умолчанию):  onnxruntime
+#   CUDA/TensorRT:       заменить на onnxruntime-gpu (==<та же версия>)
+#   ROCm (AMD):          onnxruntime-rocm
+#   OpenVINO (Intel):    onnxruntime + pip install openvino
+# Версия фиксируется для воспроизводимости сборки образа.
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+pydantic-settings==2.7.0
+PyYAML==6.0.2
+onnxruntime==1.20.1
+opencv-python-headless==4.10.0.84
+numpy==2.0.2

@@ -1,0 +1,90 @@
+# docker-compose.yml — автономный запуск inference-воркера acuity-yolo.
+#
+# Воркер stateless: масштабируется по числу реплик. Несколько способов:
+#
+#   1. Локально в этом compose:
+#        docker compose up --scale inference-worker=3
+#      Но без балансера запросы пойдут только на первый (по имени сервиса).
+#
+#   2. За nginx round-robin (рекомендуется для отдельного сервера):
+#      раскомментируйте сервис nginx ниже; он балансирует по N реплик
+#      inference-worker по DNS-имени сервиса (Docker internal DNS).
+#
+#   3. За HAProxy/Cloudflare/любым L7-балансером — выставить :9104 наружу.
+#
+# Воркер ИЗОЛИРОВАН: не подключается к NATS/Kafka/Postgres/S3 acuity-server.
+# Единственная точка входа — POST /detect (multipart JPEG). inference-service
+# (Go) из acuity-server ходит сюда по http://inference-worker:8000 (или через
+# балансер, если воркер на отдельном сервере).
+#
+# Модель: по умолчанию экспортируется на этапе сборки образа (YOLOv12n → ONNX,
+# см. Dockerfile). Альтернативно — примонтировать свой .onnx через volume
+# (полезно при сборке без интернета):
+#
+#   volumes:
+#     - ./models/yolov12n.onnx:/app/models/yolov12n.onnx:ro
+#
+# Redis: опциональный сервис (заготовка под кеш/очередь в тираже 2). В тираже 1
+# не используется воркером; оставлен как пример — можно убрать.
+
+services:
+  inference-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        EXPORT_MODEL: ${EXPORT_MODEL:-1}
+        MODEL_SPEC: ${MODEL_SPEC:-yolov12n.pt}
+        IMGSZ: ${IMGSZ:-640}
+    image: acuity-yolo/worker:dev
+    container_name: acuity-yolo-worker
+    restart: unless-stopped
+    environment:
+      EXECUTION_PROVIDER: ${EXECUTION_PROVIDER:-cpu}
+      CONF_THRESHOLD: ${CONF_THRESHOLD:-0.4}
+      IOU_THRESHOLD: ${IOU_THRESHOLD:-0.5}
+      INPUT_SIZE: ${INPUT_SIZE:-640}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MODEL_NAME: ${MODEL_NAME:-yolov12n}
+      MODEL_PATH: ${MODEL_PATH:-models/yolov12n.onnx}
+    # Раскомментируйте, чтобы примонтировать свою модель вместо сборки:
+    # volumes:
+    #   - ./models/yolov12n.onnx:/app/models/yolov12n.onnx:ro
+    ports:
+      - "${WORKER_HTTP_PORT:-9104}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  # Опциональный redis для будущего кеша/очереди (тираж 2). Не используется
+  # воркером в тираже 1 — можно убрать. Оставлен как заготовка.
+  redis:
+    image: redis:7-alpine
+    container_name: acuity-yolo-redis
+    restart: unless-stopped
+    profiles: ["with-redis"]   # запускается только при --profile with-redis
+    volumes:
+      - redis-data:/data
+
+  # Nginx round-robin балансер для нескольких реплик воркера (отдельный сервер).
+  # Раскомментируйте, если поднимаете N реплик и нужен единый вход.
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: acuity-yolo-nginx
+  #   restart: unless-stopped
+  #   ports:
+  #     - "${WORKER_HTTP_PORT:-9104}:80"
+  #   volumes:
+  #     - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+  #   depends_on:
+  #     - inference-worker
+
+volumes:
+  redis-data:
