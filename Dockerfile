@@ -53,19 +53,22 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 WORKDIR /export
+COPY export_model.py ./
 
-# Если EXPORT_MODEL=1 — ставим ultralytics и экспортируем. Иначе оставляем
-# пустой models/ (воркер стартует not-ready, модель примонтируется volume).
+# Готовим целевой каталог заранее (COPY --from=exporter требует его наличия
+# даже если экспорт выключен — тогда воркер стартует not-ready).
+RUN mkdir -p /export/models
+
+# Если EXPORT_MODEL=1 — ставим ultralytics и экспортируем YOLO в ONNX через
+# export_model.py (он падает с ненулевым exit при ошибке импорта/экспорта,
+# копирует .onnx в --out). Иначе каталог остаётся пустым — воркер стартует
+# not-ready, модель примонтируется volume или кладётся вручную.
 RUN if [ "$EXPORT_MODEL" = "1" ]; then \
-        pip install --upgrade pip && pip install ultralytics && \
-        python -c "from ultralytics import YOLO; \
-                   m=YOLO('${MODEL_SPEC}'); \
-                   m.export(format='onnx', imgsz=${IMGSZ}, opset=${OPSET}, simplify=True, dynamic=False, half=False)" && \
-        mkdir -p /export/models && \
-        cp /root/*.onnx /export/models/ 2>/dev/null || cp *.onnx /export/models/ 2>/dev/null || \
-        find / -name "*.onnx" -not -path "/proc/*" -exec cp {} /export/models/ \; ; \
+        pip install --upgrade pip && pip install ultralytics onnx onnxslim && \
+        python export_model.py --model "${MODEL_SPEC}" --imgsz "${IMGSZ}" --opset "${OPSET}" --out /export/models && \
+        ls -la /export/models/; \
     else \
-        mkdir -p /export/models && touch /export/models/.skip ; \
+        echo "EXPORT_MODEL=0, skipping export (models/ stays empty; worker starts not-ready)"; \
     fi
 
 ############################
