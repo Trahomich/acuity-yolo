@@ -149,6 +149,15 @@ async def detect(image: UploadFile = File(...)) -> JSONResponse:
         ))
         classes_seen.add(d.cls)
 
+    log.info(
+        "detect",
+        extra={
+            "inference_ms": inference_ms,
+            "boxes": len(boxes),
+            "classes": sorted(classes_seen) if classes_seen else [],
+        },
+    )
+
     resp = DetectResponse(
         boxes=boxes,
         classes=sorted(classes_seen),
