@@ -37,18 +37,13 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # DEVICE=cpu (по умолчанию) → requirements.txt (onnxruntime).
 # DEVICE=rocm (AMD GPU)      → requirements-rocm.txt (onnxruntime-rocm + numpy<2).
+# HIP-библиотеки (libamdhip64.so, librocm-core.so) НЕ ставим из apt: этих
+# пакетов нет в Debian-репозиториях. Их берём с хоста через volume
+# /opt/rocm:/opt/rocm:ro в docker-compose.yml, а путь к ним подсказываем
+# рантайму через LD_LIBRARY_PATH (см. runtime-стадию ниже).
 ARG DEVICE=cpu
 COPY requirements.txt requirements-rocm.txt ./
-RUN if [ "$DEVICE" = "rocm" ]; then \
-        REQ=requirements-rocm.txt; \
-        # HIP-библиотеки для onnxruntime-rocm: без них падает ImportError
-        # "librocm-core.so / libamdhip64.so not found" при старте сессии.
-        apt-get update && apt-get install -y --no-install-recommends \
-            hiprocctransform librocfft-dev libamdhip64-dev && \
-        rm -rf /var/lib/apt/lists/*; \
-    else \
-        REQ=requirements.txt; \
-    fi && \
+RUN REQ=$([ "$DEVICE" = "rocm" ] && echo requirements-rocm.txt || echo requirements.txt) && \
     pip install --upgrade pip && pip install -r "$REQ"
 
 ############################
@@ -106,7 +101,14 @@ FROM python:3.11-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
-    ACUITY_WORKER_CONFIG=/etc/acuity-yolo/configs/worker.yml
+    ACUITY_WORKER_CONFIG=/etc/acuity-yolo/configs/worker.yml \
+    # onnxruntime-rocm ищет libamdhip64.so / librochook.so в /opt/rocm/lib —
+    # они приходят с хоста через volume (см. docker-compose.yml). Без этого
+    # падает "libamdhip64.so: cannot open shared object file" при старте EP.
+    LD_LIBRARY_PATH="/opt/rocm/lib:/opt/rocm/llvm/lib:${LD_LIBRARY_PATH}" \
+    # HSA_OVERRIDE_GFX_version: ROCm на RDNA3 (gfx1100) иногда определяется
+    # как неsupported; фиксируем явно. Для других GPU — переопределить.
+    HSA_OVERRIDE_GFX_VERSION="11.0.0"
 
 # Минимальный runtime: libGL для opencv-headless (libglib — зависимость).
 RUN apt-get update && apt-get install -y --no-install-recommends \
