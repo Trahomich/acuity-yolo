@@ -12,10 +12,10 @@
 # ultralytics; используйте EXPORT_MODEL=0 и примонтируйте .onnx через volume.
 #
 # Execution Provider:
-#   CPU (по умолчанию):  onnxruntime          — собирается как есть.
-#   GPU (CUDA/ROCm):     собрать с другим requirements-gpu.txt или поставить
-#                         onnxruntime-gpu/-rocm, и задать EXECUTION_PROVIDER.
-#   В тираже 1 (ТЗ) стартуем на CPU; GPU-EP — конфигом, без пересборки логики.
+#   DEVICE=cpu (по умолчанию для исходного образа): requirements.txt → onnxruntime.
+#   DEVICE=rocm (AMD GPU): requirements-rocm.txt → onnxruntime-rocm + HIP-библиотеки.
+#   Готовый образ зависит от DEVICE; переключение требует пересборки. EP в рантайме
+#   задаётся через EXECUTION_PROVIDER и должно совпадать с DEVICE.
 
 ############################
 # Builder: venv с зависимостями
@@ -35,8 +35,21 @@ WORKDIR /build
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY requirements.txt .
-RUN pip install --upgrade pip && pip install -r requirements.txt
+# DEVICE=cpu (по умолчанию) → requirements.txt (onnxruntime).
+# DEVICE=rocm (AMD GPU)      → requirements-rocm.txt (onnxruntime-rocm + numpy<2).
+ARG DEVICE=cpu
+COPY requirements.txt requirements-rocm.txt ./
+RUN if [ "$DEVICE" = "rocm" ]; then \
+        REQ=requirements-rocm.txt; \
+        # HIP-библиотеки для onnxruntime-rocm: без них падает ImportError
+        # "librocm-core.so / libamdhip64.so not found" при старте сессии.
+        apt-get update && apt-get install -y --no-install-recommends \
+            hiprocctransform librocfft-dev libamdhip64-dev && \
+        rm -rf /var/lib/apt/lists/*; \
+    else \
+        REQ=requirements.txt; \
+    fi && \
+    pip install --upgrade pip && pip install -r "$REQ"
 
 ############################
 # Exporter: YOLOv12n.pt → ONNX (опциональный шаг)

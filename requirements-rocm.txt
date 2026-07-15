@@ -1,0 +1,26 @@
+# requirements-rocm.txt — runtime-зависимости для AMD ROCm.
+#
+# Используется вместо requirements.txt при сборке образа с DEVICE=rocm
+# (см. build-arg в Dockerfile и docker-compose.yml).
+#
+# ⚠️ ROCm Execution Provider УДАЛЁН из onnxruntime начиная с v1.23
+#    (https://onnxruntime.ai/docs/execution-providers/ROCm-ExecutionProvider.html).
+#    Последние версии с рабочим ROCMExecutionProvider — ветка 1.22.x.
+#    Ставим 1.22.0: собрана под ROCm 6.x, совместима с amdgpu-dkms 6.3/6.4.
+#
+# ⚠️ Колёса onnxruntime-rocm несовместимы с numpy>=2 — фиксируем numpy<2
+#    (вместо numpy==2.0.2 из requirements.txt).
+#
+# ВНИМАНИЕ: здесь НЕ подключаем `-r requirements.txt` — там закреплён
+# onnxruntime==1.20.1 (CPU), он конфликтует с onnxruntime-rocm. Список
+# дублируется полностью, с заменой onnxruntime → onnxruntime-rocm.
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+pydantic-settings==2.7.0
+PyYAML==6.0.2
+onnxruntime-rocm==1.22.0
+opencv-python-headless==4.10.0.84
+numpy<2

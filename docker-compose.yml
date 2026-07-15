@@ -24,6 +24,13 @@
 #   volumes:
 #     - ./models/yolov12n.onnx:/app/models/yolov12n.onnx:ro
 #
+# AMD GPU (ROCm): по умолчанию собран профиль GPU (DEVICE=rocm,
+# EXECUTION_PROVIDER=rocm). Проброшены /dev/kfd, /dev/dri и группа render.
+# Чтобы запустить на CPU без GPU — задайте в .env:
+#   DEVICE=cpu
+#   EXECUTION_PROVIDER=cpu
+# и пересоберите образ: docker compose build.
+#
 # Redis: опциональный сервис (заготовка под кеш/очередь в тираже 2). В тираже 1
 # не используется воркером; оставлен как пример — можно убрать.
 
@@ -36,22 +43,40 @@ services:
         EXPORT_MODEL: ${EXPORT_MODEL:-1}
         MODEL_SPEC: ${MODEL_SPEC:-yolo12n.pt}
         IMGSZ: ${IMGSZ:-640}
+        # DEVICE=rocm — собирать с onnxruntime-rocm (AMD GPU). cpu (по
+        # умолчанию) — обычный requirements.txt. Должно совпадать с
+        # EXECUTION_PROVIDER ниже, иначе EP не поднимется.
+        DEVICE: ${DEVICE:-rocm}
     image: acuity-yolo/worker:dev
     container_name: acuity-yolo-worker
     restart: unless-stopped
     environment:
-      EXECUTION_PROVIDER: ${EXECUTION_PROVIDER:-cpu}
+      EXECUTION_PROVIDER: ${EXECUTION_PROVIDER:-rocm}
       CONF_THRESHOLD: ${CONF_THRESHOLD:-0.4}
       IOU_THRESHOLD: ${IOU_THRESHOLD:-0.5}
       INPUT_SIZE: ${INPUT_SIZE:-640}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       MODEL_NAME: ${MODEL_NAME:-yolov12n}
       MODEL_PATH: ${MODEL_PATH:-models/yolov12n.onnx}
-    # Раскомментируйте, чтобы примонтировать свою модель вместо сборки:
-    # volumes:
-    #   - ./models/yolov12n.onnx:/app/models/yolov12n.onnx:ro
     ports:
       - "${WORKER_HTTP_PORT:-9104}:8000"
+    # AMD GPU (ROCm). Пробрасываем узлы устройств и группу render, которой
+    # они принадлежат на хосте. RENDER_GID — номер группы render на хосте
+    # (узнать: `getent group render` / `stat -c %g /dev/kfd`). Для DEVICE=cpu
+    # этот блок безвреден: EP просто откатится на CPU.
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - "${RENDER_GID:-992}"
+    cap_add:
+      - SYS_PTRACE        # нужно hip для доступа к ROCm-инструментам
+    security_opt:
+      - seccomp:unconfined
+    volumes:
+      - /opt/rocm:/opt/rocm:ro
+      # Чтобы примонтировать свою модель вместо сборки, добавьте строку:
+      # - ./models/yolov12n.onnx:/app/models/yolov12n.onnx:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
       interval: 15s
@@ -61,7 +86,20 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2g
+          memory: 4g
+
+  # Cloudflare Tunnel: проброс воркера наружу через tunnel (без открытых портов
+  # на сервере). Запускается по токену; ингресс-правила (какой публичный URL
+  # → http://inference-worker:8000) настраиваются в Cloudflare Zero Trust
+  # dashboard — в compose они НЕ задаются при запуске по --token.
+  # Токен лежит в CLOUDFLARE_TUNNEL_TOKEN (скопируйте из .env, не хардкодьте).
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: acuity-yolo-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - inference-worker
 
   # Опциональный redis для будущего кеша/очереди (тираж 2). Не используется
   # воркером в тираже 1 — можно убрать. Оставлен как заготовка.
