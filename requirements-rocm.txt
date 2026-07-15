@@ -6,7 +6,9 @@
 # ⚠️ ROCm Execution Provider УДАЛЁН из onnxruntime начиная с v1.23
 #    (https://onnxruntime.ai/docs/execution-providers/ROCm-ExecutionProvider.html).
 #    Последние версии с рабочим ROCMExecutionProvider — ветка 1.22.x.
-#    Ставим 1.22.0: собрана под ROCm 6.x, совместима с amdgpu-dkms 6.3/6.4.
+#    На PyPI доступны только пост-релизы: 1.22.2.post1/.post2/.post3.
+#    Берём 1.22.2.post3 (последний): собрана под ROCm 6.x, совместима с
+#    amdgpu-dkms 6.3/6.4.
 #
 # ⚠️ Колёса onnxruntime-rocm несовместимы с numpy>=2 — фиксируем numpy<2
 #    (вместо numpy==2.0.2 из requirements.txt).
@@ -21,6 +23,6 @@ python-multipart==0.0.20
 pydantic==2.10.4
 pydantic-settings==2.7.0
 PyYAML==6.0.2
-onnxruntime-rocm==1.22.0
+onnxruntime-rocm==1.22.2.post3
 opencv-python-headless==4.10.0.84
 numpy<2
