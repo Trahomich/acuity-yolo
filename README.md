@@ -135,4 +135,5 @@ configs/worker.yml конфигурация
 Dockerfile         multi-stage: builder → exporter (YOLO→ONNX) → runtime
 docker-compose.yml автономный запуск + опц. redis/nginx
 models/            сюда кладётся/монтируется .onnx (в git не коммитится)
+TODO.md            дорожная карта и открытые задачи
 ```
