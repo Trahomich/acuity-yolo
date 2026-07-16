@@ -20,7 +20,7 @@ POST /detect  (multipart: image=<JPEG|PNG>)
       ],
       "classes": ["person"],
       "inference_ms": 47,
-      "model": "yolov12n",
+      "model": "yolov12m",
       "ep": "cpu"
     }
 
@@ -35,7 +35,7 @@ GET /          — краткая сводка состояния
 
 ## Модель
 
-- **YOLOv12n** (`input_size=640`, ONNX) — зафиксированное решение ТЗ §10.
+- **YOLOv12m** (`input_size=640`, ONNX) — зафиксированное решение ТЗ §10.
 - Классы COCO-80 (стартовый набор: `person`, `car/truck/bus/motorcycle`,
   `suitcase/handbag/backpack`).
 - Execution Provider — конфигом: `cpu` (по умолчанию) / `cuda` / `rocm` /
@@ -45,8 +45,8 @@ GET /          — краткая сводка состояния
 
 ```bash
 pip install ultralytics
-python export_model.py                        # → models/yolov12n.onnx
-python export_model.py --model yolov8n.pt      # альтернативная модель
+python export_model.py                        # → models/yolov12m.onnx
+python export_model.py --model yolov8m.pt      # альтернативная модель
 ```
 
 В Docker-сборке экспорт выполняется автоматически (build-arg `EXPORT_MODEL=1`).
@@ -75,7 +75,7 @@ curl -s -F "image=@test.jpg" http://localhost:9104/detect | jq
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 pip install ultralytics && python export_model.py    # один раз
-MODEL_PATH=models/yolov12n.onnx python -m uvicorn app.main:app --port 8000
+MODEL_PATH=models/yolov12m.onnx python -m uvicorn app.main:app --port 8000
 ```
 
 ## Масштабирование
@@ -101,9 +101,9 @@ HTTP и не требует от воркера обратных вызовов.
 
 ### Ресурсы (ориентировочно, ТЗ §5.3)
 
-- CPU, YOLOv12n, 640px: ~50–150 мс/кадр. При интервале 3 с и 1 камере — копейки.
+- CPU, YOLOv12m, 640px: ~150–400 мс/кадр. При интервале 3 с и 1 камере — запас большой.
 - AMD GPU + ROCm EP: ускорение ~5–15×. Переключение EP — конфигом, без пересборки.
-- Для CPU-инстанса рекомендуется ~2 GiB RAM и ≥1 ядро на реплику.
+- Для CPU-инстанса рекомендуется ~3 GiB RAM и ≥1 ядро на реплику (модель ~20 M params).
 
 ## Конфигурация
 
@@ -111,12 +111,12 @@ HTTP и не требует от воркера обратных вызовов.
 
 | Параметр | По умолчанию | Описание |
 |---|---|---|
-| `MODEL_PATH` | `models/yolov12n.onnx` | путь к `.onnx` |
+| `MODEL_PATH` | `models/yolov12m.onnx` | путь к `.onnx` |
 | `EXECUTION_PROVIDER` | `cpu` | `cpu\|cuda\|rocm\|openvino\|tensorrt` |
 | `CONF_THRESHOLD` | `0.4` | порог уверенности бокса |
 | `IOU_THRESHOLD` | `0.5` | порог IoU для NMS |
 | `INPUT_SIZE` | `640` | размер входа модели |
-| `MODEL_NAME` | `yolov12n` | метка модели в ответе |
+| `MODEL_NAME` | `yolov12m` | метка модели в ответе |
 | `WORKERS` | `1` | uvicorn-воркеров (для нагрузки — `--scale` реплик) |
 | `LOG_LEVEL` | `info` | `debug\|info\|warn\|error` |
 | `MAX_IMAGE_BYTES` | `20971520` | лимит размера кадра (байт) |

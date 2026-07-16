@@ -52,14 +52,14 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
 
-    model_path: str = Field(default="models/yolov12n.onnx")
+    model_path: str = Field(default="models/yolov12m.onnx")
     execution_provider: ExecutionProvider = Field(default="cpu")
     conf_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
     iou_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     input_size: int = Field(default=640, ge=32, le=4096)
 
     # Имя модели для ответа detections.model (метка для логики/метрик).
-    model_name: str = Field(default="yolov12n")
+    model_name: str = Field(default="yolov12m")
 
     # HTTP-сервер.
     host: str = Field(default="0.0.0.0")
