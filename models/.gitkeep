@@ -1,7 +1,7 @@
 # Модели кладутся сюда одним из способов:
 #
 # 1. Автоматически при сборке образа (Dockerfile, EXPORT_MODEL=1):
-#    ultralytics скачивает yolov12n.pt и экспортирует в ONNX.
+#    ultralytics скачивает yolov12m.pt и экспортирует в ONNX.
 #
 # 2. Вручную через export_model.py:
 #    pip install ultralytics && python export_model.py

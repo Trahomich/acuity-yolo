@@ -2,7 +2,7 @@
 #
 # Multi-stage:
 #   1. builder     — ставит runtime-зависимости в venv
-#   2. exporter    — (опционально) экспортирует YOLOv12n.pt → ONNX через ultralytics
+#   2. exporter    — (опционально) экспортирует YOLOv12m.pt → ONNX через ultralytics
 #   3. runtime     — python:3.11-slim + venv + модель + app/
 #
 # Шаг exporter управляется build-arg EXPORT_MODEL (по умолчанию 1). Чтобы
@@ -47,12 +47,12 @@ RUN REQ=$([ "$DEVICE" = "rocm" ] && echo requirements-rocm.txt || echo requireme
     pip install --upgrade pip && pip install -r "$REQ"
 
 ############################
-# Exporter: YOLOv12n.pt → ONNX (опциональный шаг)
+# Exporter: YOLOv12m.pt → ONNX (опциональный шаг)
 ############################
 FROM python:3.11-slim AS exporter
 
 ARG EXPORT_MODEL=1
-ARG MODEL_SPEC=yolo12n.pt
+ARG MODEL_SPEC=yolo12m.pt
 ARG IMGSZ=640
 ARG OPSET=12
 

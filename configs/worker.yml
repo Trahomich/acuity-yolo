@@ -5,12 +5,12 @@
 # в docker-compose.yml.
 
 worker:
-  model_path: "models/yolov12n.onnx"
+  model_path: "models/yolov12m.onnx"
   execution_provider: "cpu"     # cpu | cuda | rocm | openvino | tensorrt
   conf_threshold: 0.4
   iou_threshold: 0.5
   input_size: 640
-  model_name: "yolov12n"
+  model_name: "yolov12m"
 
   host: "0.0.0.0"
   port: 8000

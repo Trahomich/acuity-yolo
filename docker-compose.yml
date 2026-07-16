@@ -10,8 +10,8 @@ services:
       IOU_THRESHOLD: ${IOU_THRESHOLD:-0.5}
       INPUT_SIZE: ${INPUT_SIZE:-640}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      MODEL_NAME: ${MODEL_NAME:-yolov12n}
-      MODEL_PATH: ${MODEL_PATH:-models/yolov12n.onnx}
+      MODEL_NAME: ${MODEL_NAME:-yolov12m}
+      MODEL_PATH: ${MODEL_PATH:-models/yolov12m.onnx}
     ports:
       - "${WORKER_HTTP_PORT:-9104}:8000"
     healthcheck:
@@ -37,8 +37,8 @@ services:
       IOU_THRESHOLD: ${IOU_THRESHOLD:-0.5}
       INPUT_SIZE: ${INPUT_SIZE:-640}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      MODEL_NAME: ${MODEL_NAME:-yolov12n}
-      MODEL_PATH: ${MODEL_PATH:-models/yolov12n.onnx}
+      MODEL_NAME: ${MODEL_NAME:-yolov12m}
+      MODEL_PATH: ${MODEL_PATH:-models/yolov12m.onnx}
     ports:
       - "${WORKER_HTTP_PORT:-9104}:8000"
     devices:

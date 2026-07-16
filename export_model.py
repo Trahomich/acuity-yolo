@@ -4,11 +4,11 @@
 Запуск (нужен интернет для первой загрузки весей; кешируется в ~/.cache):
 
     pip install ultralytics
-    python export_model.py                          # → models/yolov12n.onnx
-    python export_model.py --model yolov8n.pt       # явная модель
+    python export_model.py                          # → models/yolov12m.onnx
+    python export_model.py --model yolo12s.pt       # явная модель
     python export_model.py --imgsz 640 --opset 12
 
-Модель по умолчанию — yolov12n (ТЗ §10, зафиксированное решение). ultralytics
+Модель по умолчанию — yolov12m (ТЗ §10, зафиксированное решение). ultralytics
 скачает веса автоматически при первом запуске. Размер входа — 640 (ТЗ §5.2).
 Экспорт — dynamic=False (фиксированный 640×640), simplify=True.
 
@@ -23,16 +23,16 @@ import urllib.request
 from pathlib import Path
 
 # Базовый URL весей YOLO на GitHub releases ultralytics. Имя файла = имя модели
-# в нотации ultralytics: yolo12n.pt (YOLOv12), yolov8n.pt (v8) и т.д. Веса для
+# в нотации ultralytics: yolo12m.pt (YOLOv12), yolov8m.pt (v8) и т.д. Веса для
 # всех поколений лежат в теге v8.3.0 единообразно. ВАЖНО: YOLO12 называется
-# yolo12n (без 'v'), не yolov12n — см. https://docs.ultralytics.com/models/yolo12.
+# yolo12m (без 'v'), не yolov12m — см. https://docs.ultralytics.com/models/yolo12.
 _WEIGHTS_BASE = "https://github.com/ultralytics/assets/releases/download/v8.3.0/"
 
 
 def _ensure_weights(model_spec: str) -> Path:
     """Возвращает путь к .pt-файлу; при необходимости скачивает его.
 
-    model_spec может быть именем ('yolov12n.pt') или путём к существующему
+    model_spec может быть именем ('yolov12m.pt') или путём к существующему
     файлу. Голое имя без расширения дополняется .pt.
     """
     p = Path(model_spec)
@@ -58,8 +58,8 @@ def _ensure_weights(model_spec: str) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export YOLO to ONNX for acuity-yolo.")
-    parser.add_argument("--model", default="yolo12n.pt",
-                        help="ultralytics model spec (default: yolo12n.pt — YOLOv12)")
+    parser.add_argument("--model", default="yolo12m.pt",
+                        help="ultralytics model spec (default: yolo12m.pt — YOLOv12)")
     parser.add_argument("--imgsz", type=int, default=640, help="input size (default 640)")
     parser.add_argument("--opset", type=int, default=12, help="ONNX opset (default 12)")
     parser.add_argument("--out", default="models",
@@ -95,10 +95,10 @@ def main() -> None:
     )
     print(f"[export] exported → {path}")
     # ultralytics кладёт <name>.onnx рядом с <name>.pt; переносим в out_dir.
-    # Каноническое имя выхода — yolov12n.onnx (под MODEL_PATH воркера по
+    # Каноническое имя выхода — yolov12m.onnx (под MODEL_PATH воркера по
     # умолчанию), независимо от того, из какой спеки весей экспортировали.
     src = Path(path)
-    dst = out_dir / "yolov12n.onnx"
+    dst = out_dir / "yolov12m.onnx"
     if src.is_file() and src.resolve() != dst.resolve():
         src.replace(dst)
         print(f"[export] moved → {dst}")

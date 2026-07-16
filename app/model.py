@@ -105,7 +105,7 @@ class YoloModel:
         if not path.is_file():
             raise FileNotFoundError(
                 f"ONNX model not found at {path}. "
-                "Run `python export_model.py --model yolov12n.pt` to export, "
+                "Run `python export_model.py --model yolo12m.pt` to export, "
                 "or mount a volume with the .onnx file (see README)."
             )
         providers = _providers(settings.execution_provider)
