@@ -154,8 +154,19 @@ async def detect(image: UploadFile = File(...)) -> JSONResponse:
         "detect",
         extra={
             "inference_ms": inference_ms,
-            "boxes": len(boxes),
+            "boxes_count": len(boxes),
             "classes": sorted(classes_seen) if classes_seen else [],
+            # Полный вывод боксов: cls, cls_id, score, координаты xywh.
+            # Удобно для отладки и аудита детекций в логе.
+            "detections": [
+                {
+                    "cls": b.cls,
+                    "cls_id": b.cls_id,
+                    "score": b.score,
+                    "x": b.x, "y": b.y, "w": b.w, "h": b.h,
+                }
+                for b in boxes
+            ],
         },
     )
 
