@@ -44,7 +44,21 @@ ENV PATH="/opt/venv/bin:$PATH"
 ARG DEVICE=cpu
 COPY requirements.txt requirements-rocm.txt ./
 RUN REQ=$([ "$DEVICE" = "rocm" ] && echo requirements-rocm.txt || echo requirements.txt) && \
-    pip install --upgrade pip && pip install -r "$REQ"
+    pip install --upgrade pip && pip install -r "$REQ" && \
+    # ROCm-сборка onnxruntime тянет .so с выставленным executable-stack битом
+    # (PT_GNU_STACK = RWE). Без прав на mprotect(PROT_EXEC) рантайм падает:
+    #   "cannot enable executable stack as shared object requires: Invalid argument"
+    # seccomp:unconfined в compose НЕ лечит (Docker всё равно режет). Снимаем
+    # бит execstack с проблемных .so прямо в образе через execstack -c.
+    # См. https://github.com/microsoft/onnxruntime/issues/24911
+    if [ "$DEVICE" = "rocm" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends execstack && \
+        find /opt/venv/lib -name "onnxruntime_pybind11_state.so" \
+             -o -name "libonnxruntime_providers_rocm.so" \
+             -o -name "libonnxruntime_*.so" \
+             2>/dev/null | while read so; do execstack -c "$so" 2>/dev/null || true; done && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
 
 ############################
 # Exporter: YOLOv12m.pt → ONNX (опциональный шаг)
