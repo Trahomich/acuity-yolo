@@ -111,11 +111,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     # ~/.cache/miopen, system-db). Под пользователем yolo без HOME это падает
     # с Permission denied → find падает → Conv-узел падает. Решение: задаём
     # HOME=/tmp (доступен всем) И редиректим ВСЕ пути кеша MIOpen в /tmp.
+    # ВНИМАНИЕ: НЕ задаём MIOPEN_FIND_MODE=1 (Fast) — в этом режиме MIOpen
+    # полагается на кешированные бинарники ядер; для gfx1100 их нет, он
+    # выбирает несуществующий алгоритм → "No invoker registered for conv".
+    # Режим по умолчанию (Normal, 3=Hybrid) компилирует ядро сам при первом
+    # запуске — медленнее на cold start, но работает.
     HOME="/tmp" \
     MIOPEN_USER_DB_PATH="/tmp/miopen-cache" \
     MIOPEN_SYSTEM_DB_PATH="/tmp/miopen-cache" \
-    MIOPEN_CACHE_DIR="/tmp/miopen-cache" \
-    MIOPEN_FIND_MODE="1"
+    MIOPEN_CACHE_DIR="/tmp/miopen-cache"
 
 # Системный Python 3.10 (Ubuntu 22.04). venv-модуль в отдельном пакете python3.10-venv.
 # opencv-headless требует libgl1/libglib. tini для корректных сигналов.
