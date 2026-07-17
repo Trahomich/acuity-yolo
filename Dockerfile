@@ -42,42 +42,16 @@ ENV PATH="/opt/venv/bin:$PATH"
 # /opt/rocm:/opt/rocm:ro в docker-compose.yml, а путь к ним подсказываем
 # рантайму через LD_LIBRARY_PATH (см. runtime-стадию ниже).
 ARG DEVICE=cpu
-COPY requirements.txt requirements-rocm.txt ./
+COPY requirements.txt requirements-rocm.txt scripts/clear_execstack.py ./
 RUN REQ=$([ "$DEVICE" = "rocm" ] && echo requirements-rocm.txt || echo requirements.txt) && \
     pip install --upgrade pip && pip install -r "$REQ" && \
     # ROCm-сборка onnxruntime тянет .so с выставленным executable-stack битом
-    # (PT_GNU_STACK = RWE). Без прав на mprotect(PROT_EXEC) рантайм падает:
+    # (PT_GNU_STACK=RWE). Без прав на mprotect(PROT_EXEC) рантайм падает:
     #   "cannot enable executable stack as shared object requires: Invalid argument"
-    # seccomp:unconfined в compose НЕ лечит (Docker всё равно режет). Снимаем
-    # X-бит в PT_GNU_STACK у проблемных .so прямо в образе.
-    # execstack/prelink убраны из Debian → правим ELF напрямую на чистом Python
-    # (без установки пакетов). См. https://github.com/microsoft/onnxruntime/issues/24911
-    if [ "$DEVICE" = "rocm" ]; then \
-        python - <<'PYEOF'
-import glob, struct
-for so in glob.glob('/opt/venv/lib/python*/site-packages/onnxruntime/capi/*.so') + \
-          glob.glob('/opt/venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.so'):
-    with open(so, 'r+b') as f:
-        f.seek(0)
-        if f.read(4) != b'\x7fELF': continue
-        ei_class = f.read(1)[0]            # 1=32bit, 2=64bit
-        f.seek(40 if ei_class == 2 else 28)
-        phoff = struct.unpack('<Q' if ei_class == 2 else '<I', f.read(8 if ei_class == 2 else 4))[0]
-        f.seek(54 if ei_class == 2 else 42)
-        phentsize, phnum = struct.unpack('<HH', f.read(4))
-        for i in range(phnum):
-            f.seek(phoff + i*phentsize)
-            p_type, p_flags = struct.unpack('<II', f.read(8))  # только для ELF64
-            if p_type == 0x6474e551:  # PT_GNU_STACK
-                cur = f.tell()
-                f.seek(cur - 4)                       # вернулись к p_flags
-                f.write(struct.pack('<I', p_flags & ~1))  # сброс PF_X (0x1)
-                print(f'cleared execstack: {so}')
-                break
-        else:
-            print(f'no PT_GNU_STACK: {so}')
-PYEOF
-    fi
+    # seccomp:unconfined в compose НЕ лечит. execstack/prelink убраны из Debian →
+    # правим ELF напрямую на чистом Python (scripts/clear_execstack.py).
+    # Только для DEVICE=rocm. См. https://github.com/microsoft/onnxruntime/issues/24911
+    if [ "$DEVICE" = "rocm" ]; then python clear_execstack.py; fi
 
 ############################
 # Exporter: YOLOv12m.pt → ONNX (опциональный шаг)
