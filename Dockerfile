@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.6
 # Dockerfile — образ inference-воркера acuity-yolo.
 #
 # Multi-stage:
@@ -19,6 +20,10 @@
 #   того, что установлено на хосте. Нужен только amdgpu-драйвер + /dev/kfd,/dev/dri.
 #   EP в рантайме задаётся EXECUTION_PROVIDER и должно совпадать с DEVICE.
 
+# Глобальный ARG — виден во всех stages, включая FROM runtime-${DEVICE}.
+# Передаётся как --build-arg DEVICE=cpu|rocm.
+ARG DEVICE=cpu
+
 ############################
 # Builder: venv с зависимостями (общий для cpu/rocm)
 ############################
@@ -39,7 +44,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # DEVICE=cpu → requirements.txt (onnxruntime).
 # DEVICE=rocm → requirements-rocm.txt (onnxruntime-rocm + numpy<2).
-ARG DEVICE=cpu
+# ARG DEVICE — повторно объявляем, чтобы увидеть глобальное значение в RUN.
+ARG DEVICE
 COPY requirements.txt requirements-rocm.txt scripts/clear_execstack.py ./
 RUN REQ=$([ "$DEVICE" = "rocm" ] && echo requirements-rocm.txt || echo requirements.txt) && \
     pip install --upgrade pip && pip install -r "$REQ" && \
@@ -160,5 +166,5 @@ CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "
 ############################
 # Final: выбираем runtime по DEVICE
 ############################
-ARG DEVICE=cpu
+ARG DEVICE
 FROM runtime-${DEVICE} AS runtime
