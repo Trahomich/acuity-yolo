@@ -107,12 +107,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     LD_LIBRARY_PATH="/opt/rocm/lib:/opt/rocm/llvm/lib" \
     # RDNA3 (gfx1100) иногда определяется как unsupported — фиксируем явно.
     HSA_OVERRIDE_GFX_VERSION="11.0.0" \
-    # MIOpen по умолчанию пишет кеш ядер в ~/.config/miopen. Под пользователем
-    # yolo (uid 10001) без HOME это падает с "Permission denied". Перенаправляем
-    # кеш в /tmp (доступен всем на запись) и ставим быстрый режим поиска алгоритмов.
+    # MIOpen пишет кеши ядер в несколько каталогов (~/.config/miopen,
+    # ~/.cache/miopen, system-db). Под пользователем yolo без HOME это падает
+    # с Permission denied → find падает → Conv-узел падает. Решение: задаём
+    # HOME=/tmp (доступен всем) И редиректим ВСЕ пути кеша MIOpen в /tmp.
+    HOME="/tmp" \
     MIOPEN_USER_DB_PATH="/tmp/miopen-cache" \
-    MIOPEN_FIND_MODE="1" \
-    MIOPEN_DEBUG_FIND_ONLY="0"
+    MIOPEN_SYSTEM_DB_PATH="/tmp/miopen-cache" \
+    MIOPEN_CACHE_DIR="/tmp/miopen-cache" \
+    MIOPEN_FIND_MODE="1"
 
 # Системный Python 3.10 (Ubuntu 22.04). venv-модуль в отдельном пакете python3.10-venv.
 # opencv-headless требует libgl1/libglib. tini для корректных сигналов.
