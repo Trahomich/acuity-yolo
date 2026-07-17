@@ -3,7 +3,7 @@
 # Multi-stage:
 #   1. builder     — ставит runtime-зависимости в venv
 #   2. exporter    — (опционально) экспортирует YOLOv12m.pt → ONNX через ultralytics
-#   3. runtime     — python:3.11-slim + venv + модель + app/
+#   3. runtime     — python:3.12-slim + venv + модель + app/
 #
 # Шаг exporter управляется build-arg EXPORT_MODEL (по умолчанию 1). Чтобы
 # отключить экспорт (модель монтируется volume или копируется вручную), собирайте:
@@ -20,7 +20,7 @@
 ############################
 # Builder: venv с зависимостями
 ############################
-FROM python:3.11-slim AS builder
+FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -49,7 +49,7 @@ RUN REQ=$([ "$DEVICE" = "rocm" ] && echo requirements-rocm.txt || echo requireme
 ############################
 # Exporter: YOLOv12m.pt → ONNX (опциональный шаг)
 ############################
-FROM python:3.11-slim AS exporter
+FROM python:3.12-slim AS exporter
 
 ARG EXPORT_MODEL=1
 ARG MODEL_SPEC=yolo12m.pt
@@ -96,7 +96,7 @@ RUN if [ "$EXPORT_MODEL" = "1" ]; then \
 ############################
 # Runtime
 ############################
-FROM python:3.11-slim AS runtime
+FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

@@ -3,12 +3,18 @@
 # Используется вместо requirements.txt при сборке образа с DEVICE=rocm
 # (см. build-arg в Dockerfile и docker-compose.yml).
 #
-# ⚠️ ROCm Execution Provider УДАЛЁН из onnxruntime начиная с v1.23
-#    (https://onnxruntime.ai/docs/execution-providers/ROCm-ExecutionProvider.html).
-#    Последние версии с рабочим ROCMExecutionProvider — ветка 1.22.x.
-#    На PyPI доступны только пост-релизы: 1.22.2.post1/.post2/.post3.
-#    Берём 1.22.2.post3 (последний): собрана под ROCm 6.x, совместима с
-#    amdgpu-dkms 6.3/6.4.
+# ⚠️ Версия onnxruntime-rocm ЖЁСТКО привязана к версии ROCm на хосте
+#    (https://onnxruntime.ai/docs/execution-providers/ROCm-ExecutionProvider.html):
+#      onnxruntime 1.22.x → ROCm 7.0   (PyPI, ищет libhipblas.so.3)
+#      onnxruntime 1.21   → ROCm 6.4   (AMD repo, ищет libhipblas.so.6) ← наш хост
+#      onnxruntime 1.19   → ROCm 6.3
+#    На хосте ROCm 6.4 (/opt/rocm-6.4.0). Версии под 6.4 НЕТ на PyPI — AMD
+#    публикует их только на repo.radeon.com. Берём wheel по прямому URL.
+#    Доступные теги: cp310, cp312 (cp311 НЕТ) → образ собран на Python 3.12.
+#    Несовпадение версий = "Failed to load libonnxruntime_providers_rocm.so:
+#    libhipblas.so.X: cannot open shared object file" и тихий откат на CPU.
+#    (EP удалён из onnxruntime с 1.23 — выше 1.22 поднимать нельзя.)
+# ИСПРОБОВАНО: onnxruntime-rocm==1.22.2.post3 с PyPI падал с libhipblas.so.3.
 #
 # ⚠️ Колёса onnxruntime-rocm несовместимы с numpy>=2 — фиксируем numpy<2
 #    (вместо numpy==2.0.2 из requirements.txt).
@@ -23,6 +29,6 @@ python-multipart==0.0.20
 pydantic==2.10.4
 pydantic-settings==2.7.0
 PyYAML==6.0.2
-onnxruntime-rocm==1.22.2.post3
+onnxruntime-rocm @ https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/onnxruntime_rocm-1.21.0-cp312-cp312-linux_x86_64.whl
 opencv-python-headless==4.10.0.84
 numpy<2
