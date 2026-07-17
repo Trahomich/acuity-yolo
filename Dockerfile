@@ -106,7 +106,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ACUITY_WORKER_CONFIG=/etc/acuity-yolo/configs/worker.yml \
     LD_LIBRARY_PATH="/opt/rocm/lib:/opt/rocm/llvm/lib" \
     # RDNA3 (gfx1100) иногда определяется как unsupported — фиксируем явно.
-    HSA_OVERRIDE_GFX_VERSION="11.0.0"
+    HSA_OVERRIDE_GFX_VERSION="11.0.0" \
+    # MIOpen по умолчанию пишет кеш ядер в ~/.config/miopen. Под пользователем
+    # yolo (uid 10001) без HOME это падает с "Permission denied". Перенаправляем
+    # кеш в /tmp (доступен всем на запись) и ставим быстрый режим поиска алгоритмов.
+    MIOPEN_USER_DB_PATH="/tmp/miopen-cache" \
+    MIOPEN_FIND_MODE="1" \
+    MIOPEN_DEBUG_FIND_ONLY="0"
 
 # Системный Python 3.10 (Ubuntu 22.04). venv-модуль в отдельном пакете python3.10-venv.
 # opencv-headless требует libgl1/libglib. tini для корректных сигналов.
@@ -116,7 +122,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/venv \
     && groupadd --system --gid 10001 yolo \
-    && useradd --system --uid 10001 --gid yolo --no-create-home --home-dir /app yolo
+    && useradd --system --uid 10001 --gid yolo --no-create-home --home-dir /app yolo \
+    # Каталог кеша MIOpen (MIOPEN_USER_DB_PATH=/tmp/miopen-cache) под пользователем
+    # yolo, иначе MIOpen падает с Permission denied при поиске алгоритмов Conv.
+    && mkdir -p /tmp/miopen-cache && chown -R yolo:yolo /tmp/miopen-cache
 
 COPY requirements-gpu-amd.txt scripts/clear_execstack.py /tmp/build/
 RUN /opt/venv/bin/pip install --upgrade pip \
