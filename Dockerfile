@@ -1,24 +1,26 @@
 # Dockerfile — образ inference-воркера acuity-yolo.
 #
 # Multi-stage:
-#   1. builder     — ставит runtime-зависимости в venv
+#   1. builder     — ставит runtime-зависимости в venv (python:3.12-slim)
 #   2. exporter    — (опционально) экспортирует YOLOv12m.pt → ONNX через ultralytics
-#   3. runtime     — python:3.12-slim + venv + модель + app/
+#   3. runtime     — финальный образ; зависит от DEVICE:
+#                      cpu  → python:3.12-slim (лёгкий, переносимый)
+#                      rocm → rocm/dev-ubuntu-22.04:6.4 (полный ROCm 6.4,
+#                             все HIP-библиотеки нужных версий внутри, ~1.5 ГБ)
 #
 # Шаг exporter управляется build-arg EXPORT_MODEL (по умолчанию 1). Чтобы
 # отключить экспорт (модель монтируется volume или копируется вручную), собирайте:
 #   docker build --build-arg EXPORT_MODEL=0 -t acuity-yolo .
-# Если экспорт включён, но интернета нет — сборка упадёт на pip install
-# ultralytics; используйте EXPORT_MODEL=0 и примонтируйте .onnx через volume.
 #
 # Execution Provider:
-#   DEVICE=cpu (по умолчанию для исходного образа): requirements.txt → onnxruntime.
-#   DEVICE=rocm (AMD GPU): requirements-rocm.txt → onnxruntime-rocm + HIP-библиотеки.
-#   Готовый образ зависит от DEVICE; переключение требует пересборки. EP в рантайме
-#   задаётся через EXECUTION_PROVIDER и должно совпадать с DEVICE.
+#   DEVICE=cpu → onnxruntime (CPU), python:3.12-slim.
+#   DEVICE=rocm → onnxruntime-rocm 1.21.0 (ROCm 6.4), базовый образ rocm/dev.
+#   ROCm-вариант самодостаточен: HIP-библиотеки внутри образа, НЕ зависит от
+#   того, что установлено на хосте. Нужен только amdgpu-драйвер + /dev/kfd,/dev/dri.
+#   EP в рантайме задаётся EXECUTION_PROVIDER и должно совпадать с DEVICE.
 
 ############################
-# Builder: venv с зависимостями
+# Builder: venv с зависимостями (общий для cpu/rocm)
 ############################
 FROM python:3.12-slim AS builder
 
@@ -35,22 +37,16 @@ WORKDIR /build
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# DEVICE=cpu (по умолчанию) → requirements.txt (onnxruntime).
-# DEVICE=rocm (AMD GPU)      → requirements-rocm.txt (onnxruntime-rocm + numpy<2).
-# HIP-библиотеки (libamdhip64.so, librocm-core.so) НЕ ставим из apt: этих
-# пакетов нет в Debian-репозиториях. Их берём с хоста через volume
-# /opt/rocm:/opt/rocm:ro в docker-compose.yml, а путь к ним подсказываем
-# рантайму через LD_LIBRARY_PATH (см. runtime-стадию ниже).
+# DEVICE=cpu → requirements.txt (onnxruntime).
+# DEVICE=rocm → requirements-rocm.txt (onnxruntime-rocm + numpy<2).
 ARG DEVICE=cpu
 COPY requirements.txt requirements-rocm.txt scripts/clear_execstack.py ./
 RUN REQ=$([ "$DEVICE" = "rocm" ] && echo requirements-rocm.txt || echo requirements.txt) && \
     pip install --upgrade pip && pip install -r "$REQ" && \
-    # ROCm-сборка onnxruntime тянет .so с выставленным executable-stack битом
-    # (PT_GNU_STACK=RWE). Без прав на mprotect(PROT_EXEC) рантайм падает:
-    #   "cannot enable executable stack as shared object requires: Invalid argument"
-    # seccomp:unconfined в compose НЕ лечит. execstack/prelink убраны из Debian →
-    # правим ELF напрямую на чистом Python (scripts/clear_execstack.py).
-    # Только для DEVICE=rocm. См. https://github.com/microsoft/onnxruntime/issues/24911
+    # ROCm-сборка onnxruntime имеет .so с PT_GNU_STACK=RWE (executable stack).
+    # Docker seccomp режет mprotect(PROT_EXEC) → ImportError при загрузке.
+    # Снимаем X-бит напрямую через Python (execstack/prelink убраны из Debian).
+    # Только для DEVICE=rocm. https://github.com/microsoft/onnxruntime/issues/24911
     if [ "$DEVICE" = "rocm" ]; then python clear_execstack.py; fi
 
 ############################
@@ -80,16 +76,7 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
 # даже если экспорт выключен — тогда воркер стартует not-ready).
 RUN mkdir -p /export/models
 
-# Если EXPORT_MODEL=1 — ставим ultralytics (CPU-only torch, без CUDA-депов)
-# и экспортируем YOLO в ONNX через export_model.py (он падает с ненулевым
-# exit при ошибке импорта/экспорта, копирует .onnx в --out). Иначе каталог
-# остаётся пустым — воркер стартует not-ready, модель примонтируется volume
-# или кладётся вручную.
-#
-# torch CPU-only ставим с PyPI-индекса CPU-сборок, чтобы не тянуть ~3 ГБ
-# CUDA-пакетов (нам для экспорта/инференса нужен только CPU). Порядок важен:
-# сначала torch CPU, потом ultralytics (он не переустановит torch, т.к. тот
-# уже удовлетворяет зависимости).
+# Если EXPORT_MODEL=1 — ставим ultralytics (CPU-only torch) и экспортируем YOLO.
 RUN if [ "$EXPORT_MODEL" = "1" ]; then \
         pip install --upgrade pip && \
         pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision && \
@@ -101,28 +88,17 @@ RUN if [ "$EXPORT_MODEL" = "1" ]; then \
     fi
 
 ############################
-# Runtime
+# Runtime — CPU
 ############################
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim AS runtime-cpu
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
-    ACUITY_WORKER_CONFIG=/etc/acuity-yolo/configs/worker.yml \
-    # onnxruntime-rocm ищет libamdhip64.so / librochook.so в /opt/rocm/lib —
-    # они приходят с хоста через volume (см. docker-compose.yml). Без этого
-    # падает "libamdhip64.so: cannot open shared object file" при старте EP.
-    LD_LIBRARY_PATH="/opt/rocm/lib:/opt/rocm/llvm/lib:${LD_LIBRARY_PATH}" \
-    # HSA_OVERRIDE_GFX_version: ROCm на RDNA3 (gfx1100) иногда определяется
-    # как неsupported; фиксируем явно. Для других GPU — переопределить.
-    HSA_OVERRIDE_GFX_VERSION="11.0.0"
+    ACUITY_WORKER_CONFIG=/etc/acuity-yolo/configs/worker.yml
 
-# Минимальный runtime: libGL для opencv-headless (libglib — зависимость).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 \
-        libglib2.0-0 \
-        ca-certificates \
-        tini \
+        libgl1 libglib2.0-0 ca-certificates tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 yolo \
     && useradd --system --uid 10001 --gid yolo --no-create-home --home-dir /app yolo
@@ -133,14 +109,56 @@ WORKDIR /app
 COPY app/ ./app/
 COPY configs/ /etc/acuity-yolo/configs/
 COPY export_model.py ./
-
-# Модель из exporter-стадии (может быть пустой, если EXPORT_MODEL=0).
 COPY --from=exporter --chown=yolo:yolo /export/models/ ./models/
 
 USER yolo
 EXPOSE 8000
-
 ENTRYPOINT ["/usr/bin/tini", "--"]
-# workers=1 по умолчанию; для нагрузки поднимайте число реплик (--scale),
-# а не uvicorn-воркеров — модель в каждом процессе.
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+
+############################
+# Runtime — ROCm (AMD GPU)
+############################
+FROM rocm/dev-ubuntu-22.04:6.4 AS runtime-rocm
+
+# Базовый образ уже содержит /opt/rocm с HIP-библиотеками ROCm 6.4
+# (libamdhip64, libhiprtc, libMIOpen и т.д.). onnxruntime-rocm 1.21.0 собран
+# под эту версию — soname совпадают (libhipblas.so.2 и т.п.).
+# Доустанавливаем только то, чего нет в dev-образе, но нужно onnxruntime.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH" \
+    ACUITY_WORKER_CONFIG=/etc/acuity-yolo/configs/worker.yml \
+    LD_LIBRARY_PATH="/opt/rocm/lib:/opt/rocm/llvm/lib" \
+    # RDNA3 (gfx1100) иногда определяется как unsupported — фиксируем явно.
+    HSA_OVERRIDE_GFX_VERSION="11.0.0"
+
+# onnxruntime-rocm требует hipblas/miopen/rocblas/rocfft — ставим из ROCm-репо,
+# который уже настроен в базовом образе. Плюс python (в dev-образе его нет) и
+# системные либы для opencv. tini для корректных сигналов.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 python3.12-venv \
+        libgl1 libglib2.0-0 ca-certificates tini \
+        hipblas miopen-hip rocblas rocfft \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 yolo \
+    && useradd --system --uid 10001 --gid yolo --no-create-home --home-dir /app yolo
+
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+COPY app/ ./app/
+COPY configs/ /etc/acuity-yolo/configs/
+COPY export_model.py ./
+COPY --from=exporter --chown=yolo:yolo /export/models/ ./models/
+
+USER yolo
+EXPOSE 8000
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+
+############################
+# Final: выбираем runtime по DEVICE
+############################
+ARG DEVICE=cpu
+FROM runtime-${DEVICE} AS runtime

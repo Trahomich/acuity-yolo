@@ -50,8 +50,6 @@ services:
       - SYS_PTRACE
     security_opt:
       - seccomp:unconfined
-    volumes:
-      - /opt/rocm:/opt/rocm:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
       interval: 15s
