@@ -106,20 +106,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ACUITY_WORKER_CONFIG=/etc/acuity-yolo/configs/worker.yml \
     LD_LIBRARY_PATH="/opt/rocm/lib:/opt/rocm/llvm/lib" \
     # RDNA3 (gfx1100) иногда определяется как unsupported — фиксируем явно.
-    HSA_OVERRIDE_GFX_VERSION="11.0.0" \
-    # MIOpen пишет кеши ядер в несколько каталогов (~/.config/miopen,
-    # ~/.cache/miopen, system-db). Под пользователем yolo без HOME это падает
-    # с Permission denied → find падает → Conv-узел падает. Решение: задаём
-    # HOME=/tmp (доступен всем) И редиректим ВСЕ пути кеша MIOpen в /tmp.
-    # ВНИМАНИЕ: НЕ задаём MIOPEN_FIND_MODE=1 (Fast) — в этом режиме MIOpen
-    # полагается на кешированные бинарники ядер; для gfx1100 их нет, он
-    # выбирает несуществующий алгоритм → "No invoker registered for conv".
-    # Режим по умолчанию (Normal, 3=Hybrid) компилирует ядро сам при первом
-    # запуске — медленнее на cold start, но работает.
-    HOME="/tmp" \
-    MIOPEN_USER_DB_PATH="/tmp/miopen-cache" \
-    MIOPEN_SYSTEM_DB_PATH="/tmp/miopen-cache" \
-    MIOPEN_CACHE_DIR="/tmp/miopen-cache"
+    HSA_OVERRIDE_GFX_VERSION="11.0.0"
+    # ВНИМАНИЕ: MIOpen не получает USER-DROPDOWN. Кеши ядер (~/.cache/miopen,
+    # ~/.config/miopen, system-db) требует записи, и это падало под yolo с
+    # Permission denied. ENV-переменные MIOPEN_* MIOpen игнорирует для части
+    # путей (берёт $HOME/.cache напрямую). Решение: GPU-воркер работает от ROOT
+    # (как в официальных ROCm-образах AMD). Это внутренний inference-сервис на
+    # отдельном GPU-сервере за ingress — некорневой юзер тут не даёт выгоды.
+    # См. ниже: нет 'USER yolo' в этом stage (в отличие от runtime-cpu).
 
 # Системный Python 3.10 (Ubuntu 22.04). venv-модуль в отдельном пакете python3.10-venv.
 # opencv-headless требует libgl1/libglib. tini для корректных сигналов.
@@ -127,12 +121,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-pip python3.10-venv python3-dev build-essential \
         libgl1 libglib2.0-0 ca-certificates tini \
     && rm -rf /var/lib/apt/lists/* \
-    && python3 -m venv /opt/venv \
-    && groupadd --system --gid 10001 yolo \
-    && useradd --system --uid 10001 --gid yolo --no-create-home --home-dir /app yolo \
-    # Каталог кеша MIOpen (MIOPEN_USER_DB_PATH=/tmp/miopen-cache) под пользователем
-    # yolo, иначе MIOpen падает с Permission denied при поиске алгоритмов Conv.
-    && mkdir -p /tmp/miopen-cache && chown -R yolo:yolo /tmp/miopen-cache
+    && python3 -m venv /opt/venv
 
 COPY requirements-gpu-amd.txt scripts/clear_execstack.py /tmp/build/
 RUN /opt/venv/bin/pip install --upgrade pip \
@@ -147,9 +136,11 @@ WORKDIR /app
 COPY app/ ./app/
 COPY configs/ /etc/acuity-yolo/configs/
 COPY export_model.py ./
-COPY --from=exporter --chown=yolo:yolo /export/models/ ./models/
+COPY --from=exporter /export/models/ ./models/
 
-USER yolo
+# Намеренно БЕЗ 'USER yolo': MIOpen пишет кеш ядер в ~/ при поиске алгоритмов
+# Conv; под непривилегированным юзером это падает (Permission denied) →
+# инференс падает на первом Conv. root убирает весь класс permission-проблем.
 EXPOSE 8000
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
