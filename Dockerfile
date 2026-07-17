@@ -25,7 +25,7 @@
 ARG DEVICE=cpu
 
 ############################
-# Builder: venv с зависимостями (общий для cpu/rocm)
+# Builder (CPU): venv на python:3.12-slim
 ############################
 FROM python:3.12-slim AS builder
 
@@ -42,18 +42,40 @@ WORKDIR /build
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# DEVICE=cpu → requirements.txt (onnxruntime).
-# DEVICE=rocm → requirements-rocm.txt (onnxruntime-rocm + numpy<2).
-# ARG DEVICE — повторно объявляем, чтобы увидеть глобальное значение в RUN.
-ARG DEVICE
-COPY requirements.txt requirements-rocm.txt scripts/clear_execstack.py ./
-RUN REQ=$([ "$DEVICE" = "rocm" ] && echo requirements-rocm.txt || echo requirements.txt) && \
-    pip install --upgrade pip && pip install -r "$REQ" && \
+COPY requirements.txt ./
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+############################
+# Builder (ROCm): venv на rocm/dev-ubuntu-22.04:6.4
+# Нужен ОТДЕЛЬНЫЙ builder, т.к. venv хранит симлинки на интерпретатор и НЕ
+# переносим между базовыми образами. Python 3.12 ставим через deadsnakes PPA
+# (Ubuntu 22.04 несёт только 3.10, а колесо onnxruntime-rocm собрано под cp312).
+############################
+FROM rocm/dev-ubuntu-22.04:6.4 AS builder-rocm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common gnupg build-essential wget \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 python3.12-venv python3.12-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3.12 -m venv /opt/venv
+
+ENV PATH="/opt/venv/bin:$PATH"
+WORKDIR /build
+
+COPY requirements-rocm.txt scripts/clear_execstack.py ./
+RUN pip install --upgrade pip && pip install -r requirements-rocm.txt && \
     # ROCm-сборка onnxruntime имеет .so с PT_GNU_STACK=RWE (executable stack).
     # Docker seccomp режет mprotect(PROT_EXEC) → ImportError при загрузке.
     # Снимаем X-бит напрямую через Python (execstack/prelink убраны из Debian).
-    # Только для DEVICE=rocm. https://github.com/microsoft/onnxruntime/issues/24911
-    if [ "$DEVICE" = "rocm" ]; then python clear_execstack.py; fi
+    # https://github.com/microsoft/onnxruntime/issues/24911
+    python clear_execstack.py
 
 ############################
 # Exporter: YOLOv12m.pt → ONNX (опциональный шаг)
@@ -140,17 +162,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HSA_OVERRIDE_GFX_VERSION="11.0.0"
 
 # onnxruntime-rocm требует hipblas/miopen/rocblas/rocfft — ставим из ROCm-репо,
-# который уже настроен в базовом образе. Плюс python (в dev-образе его нет) и
-# системные либы для opencv. tini для корректных сигналов.
+# который уже настроен в базовом образе. Python НЕ ставим: venv из builder-rocm
+# несёт свой интерпретатор 3.12. tini для корректных сигналов.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3.12 python3.12-venv \
         libgl1 libglib2.0-0 ca-certificates tini \
         hipblas miopen-hip rocblas rocfft \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 yolo \
     && useradd --system --uid 10001 --gid yolo --no-create-home --home-dir /app yolo
 
-COPY --from=builder /opt/venv /opt/venv
+# venv из builder-rocm (тот же базовый образ + Python 3.12) — интерпретатор
+# совместим, симлинки валидны.
+COPY --from=builder-rocm /opt/venv /opt/venv
 
 WORKDIR /app
 COPY app/ ./app/
