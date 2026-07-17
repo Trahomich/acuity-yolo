@@ -142,7 +142,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     # RDNA3 (gfx1100) иногда определяется как unsupported — фиксируем явно.
     HSA_OVERRIDE_GFX_VERSION="11.0.0"
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN ln -sfn /opt/rocm-6.4.0 /opt/rocm \
+    && apt-get update && apt-get install -y --no-install-recommends \
         libgl1 libglib2.0-0 ca-certificates tini \
         hipblas miopen-hip rocblas rocfft \
     && rm -rf /var/lib/apt/lists/* \
