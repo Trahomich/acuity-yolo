@@ -1,17 +1,20 @@
 # .github/workflows/build.yml
 #
 # Сборка и публикация Docker-образов в GHCR (GitHub Container Registry).
-# На каждый push в main собираются оба варианта:
-#   - ghcr.io/trahomich/acuity-yolo/worker:cpu      (onnxruntime, CPU-only)
-#   - ghcr.io/trahomich/acuity-yolo/worker:rocm     (onnxruntime-rocm, AMD GPU)
+# Matrix: device (cpu, gpu-amd) × model (m, l, x). Каждый комбайн — отдельный тег:
+#   ghcr.io/trahomich/acuity-yolo/worker:cpu-m
+#   ghcr.io/trahomich/acuity-yolo/worker:cpu-l
+#   ghcr.io/trahomich/acuity-yolo/worker:cpu-x
+#   ghcr.io/trahomich/acuity-yolo/worker:gpu-amd-m
+#   ghcr.io/trahomich/acuity-yolo/worker:gpu-amd-l
+#   ghcr.io/trahomich/acuity-yolo/worker:gpu-amd-x
+# Совместимость тегов: :cpu и :gpu-amd (без -model) указывают на -m для обратной
+# совместимости со старыми deploy-конфигами.
 #
-# Образы публичные (чтобы сервер мог тянуть без docker login). Если нужно
-# закрыть — в GitHub: репо → Packages → worker → Settings → Change visibility.
+# Образы публичные (сервер тянет без docker login).
 #
-# Тегирование:
-#   push в main     → worker:cpu / worker:rocm (rolling)
-#   тег v*.*.*      → worker:cpu:<tag> / worker:rocm:<tag> + :<tag>
-#   pull_request    → сборка без пуша (smoke-тест)
+# Переключение модели в deploy — просто смена тега образа, без пересборки:
+#   image: ghcr.io/.../worker:gpu-amd-l
 name: build
 
 on:
@@ -31,6 +34,7 @@ jobs:
       fail-fast: false
       matrix:
         device: [cpu, gpu-amd]
+        model: [m, l, x]
     steps:
       - uses: actions/checkout@v4
 
@@ -45,24 +49,32 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute image tags
-        id: tags
+      - name: Compute image tags and model spec
+        id: meta
         env:
           DEVICE: ${{ matrix.device }}
+          MODEL: ${{ matrix.model }}
           OWNER: ${{ github.repository_owner }}
           REF: ${{ github.ref }}
         run: |
-          # GHCR требует имя в нижнем регистре.
           owner="$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')"
           image="ghcr.io/${owner}/acuity-yolo/worker"
           echo "image=$image" >> "$GITHUB_OUTPUT"
 
-          # Собираем список тегов (по одному на строку, склеим через \n).
-          tags="${image}:${DEVICE}"
+          # MODEL_SPEC для Dockerfile (export_model.py): yolo12m.pt / yolo12l.pt / ...
+          echo "model_spec=yolo12${MODEL}.pt" >> "$GITHUB_OUTPUT"
+          # Имя .onnx-файла, которое экспорт положит в models/
+          echo "model_name=yolov12${MODEL}" >> "$GITHUB_OUTPUT"
+
+          # Тег вида <device>-<model>, напр. gpu-amd-l. Плюс алиас <device>
+          # (без модели) для модели m — обратная совместимость со старыми deploy.
+          tags="${image}:${DEVICE}-${MODEL}"
+          if [[ "$MODEL" == "m" ]]; then
+            tags="${tags}\n${image}:${DEVICE}"
+          fi
           if [[ "$REF" == refs/tags/v* ]]; then
             ver="${REF#refs/tags/v}"
-            tags="${tags}\n${image}:${DEVICE}-${ver}"
-            tags="${tags}\n${image}:${ver}-${DEVICE}"
+            tags="${tags}\n${image}:${DEVICE}-${MODEL}-${ver}"
           fi
           {
             echo "tags<<EOF"
@@ -78,7 +90,10 @@ jobs:
           build-args: |
             DEVICE=${{ matrix.device }}
             EXPORT_MODEL=1
+            MODEL_SPEC=${{ steps.meta.outputs.model_spec }}
+            MODEL_NAME=${{ steps.meta.outputs.model_name }}
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.tags.outputs.tags }}
+          tags: ${{ steps.meta.outputs.tags }}
+          # Кэш раздельно по device (модели различаются только тонким слоем экспорта).
           cache-from: type=gha,scope=${{ matrix.device }}
           cache-to: type=gha,mode=max,scope=${{ matrix.device }}

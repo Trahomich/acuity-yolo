@@ -1,9 +1,11 @@
 services:
   worker:
-    # Образ выбирается DEVICE: cpu или gpu-amd.
-    #   cpu     → ghcr.io/trahomich/acuity-yolo/worker:cpu     (onnxruntime, python:slim)
-    #   gpu-amd → ghcr.io/trahomich/acuity-yolo/worker:gpu-amd (onnxruntime-rocm, rocm/dev)
-    image: ghcr.io/trahomich/acuity-yolo/worker:${DEVICE:-gpu-amd}
+    # Образ тегируется как worker:<device>-<model>. Переключение железа — DEVICE,
+    # переключение модели — MODEL (m/l/x). Оба — без пересборки, через pull.
+    #   ghcr.io/trahomich/acuity-yolo/worker:gpu-amd-m  (по умолчанию)
+    #   ghcr.io/trahomich/acuity-yolo/worker:gpu-amd-l
+    #   ghcr.io/trahomich/acuity-yolo/worker:cpu-x  и т.д.
+    image: ghcr.io/trahomich/acuity-yolo/worker:${DEVICE:-gpu-amd}-${MODEL:-m}
     container_name: acuity-yolo-worker
     pull_policy: always
     restart: unless-stopped
@@ -17,6 +19,9 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       MODEL_NAME: ${MODEL_NAME:-yolov12m}
       MODEL_PATH: ${MODEL_PATH:-models/yolov12m.onnx}
+      # Число uvicorn-воркеров (параллельный инференс). Каждый грузит свою копию
+      # модели в RAM — поднимать с учётом лимита памяти контейнера.
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-1}
     ports:
       - "${WORKER_HTTP_PORT:-9104}:8000"
     # ── AMD GPU (ROCm). Нужен только для DEVICE=gpu-amd. ──

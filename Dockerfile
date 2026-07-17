@@ -32,6 +32,7 @@ FROM python:3.11-slim AS exporter
 
 ARG EXPORT_MODEL=1
 ARG MODEL_SPEC=yolo12m.pt
+ARG MODEL_NAME=yolov12m
 ARG IMGSZ=640
 ARG OPSET=12
 
@@ -54,7 +55,7 @@ RUN if [ "$EXPORT_MODEL" = "1" ]; then \
         pip install --upgrade pip && \
         pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision && \
         pip install ultralytics onnx onnxslim && \
-        python export_model.py --model "${MODEL_SPEC}" --imgsz "${IMGSZ}" --opset "${OPSET}" --out /export/models && \
+        python export_model.py --model "${MODEL_SPEC}" --model-name "${MODEL_NAME}" --imgsz "${IMGSZ}" --opset "${OPSET}" --out /export/models && \
         ls -la /export/models/; \
     else \
         echo "EXPORT_MODEL=0, skipping export (models/ stays empty; worker starts not-ready)"; \
@@ -89,7 +90,10 @@ COPY --from=exporter --chown=yolo:yolo /export/models/ ./models/
 USER yolo
 EXPOSE 8000
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# UVICORN_WORKERS — число uvicorn-процессов (каждый грузит свою копию модели).
+# По умолчанию 1; для нагрузки поднимать через ENV, учитывая RAM-лимит.
+ENV UVICORN_WORKERS=1
+CMD python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers "$UVICORN_WORKERS"
 
 ############################
 # Runtime — AMD GPU (ROCm), одностадийный
@@ -143,7 +147,12 @@ COPY --from=exporter /export/models/ ./models/
 # инференс падает на первом Conv. root убирает весь класс permission-проблем.
 EXPOSE 8000
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# UVICORN_WORKERS — число uvicorn-процессов. Каждый грузит свою копию модели
+# (~700МБ RAM для m, ~1.5ГБ для x), поэтому по умолчанию 1. Для нагрузки —
+# поднимать через ENV, учитывая память лимита контейнера. Альтернатива —
+# масштабировать число реплик (--scale), а не воркеров.
+ENV UVICORN_WORKERS=1
+CMD python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers "$UVICORN_WORKERS"
 
 ############################
 # Final: выбираем runtime по DEVICE

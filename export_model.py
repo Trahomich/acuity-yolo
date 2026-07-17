@@ -60,6 +60,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Export YOLO to ONNX for acuity-yolo.")
     parser.add_argument("--model", default="yolo12m.pt",
                         help="ultralytics model spec (default: yolo12m.pt — YOLOv12)")
+    parser.add_argument("--model-name", default="yolov12m",
+                        help="каноническое имя выходного .onnx без расширения "
+                             "(default: yolov12m → models/yolov12m.onnx). Должно "
+                             "совпадать с MODEL_PATH воркера.")
     parser.add_argument("--imgsz", type=int, default=640, help="input size (default 640)")
     parser.add_argument("--opset", type=int, default=12, help="ONNX opset (default 12)")
     parser.add_argument("--out", default="models",
@@ -94,11 +98,12 @@ def main() -> None:
         half=args.half,
     )
     print(f"[export] exported → {path}")
-    # ultralytics кладёт <name>.onnx рядом с <name>.pt; переносим в out_dir.
-    # Каноническое имя выхода — yolov12m.onnx (под MODEL_PATH воркера по
-    # умолчанию), независимо от того, из какой спеки весей экспортировали.
+    # ultralytics кладёт <name>.onnx рядом с .pt-весами. Каноническое имя выхода
+    # зависит от model_name: yolov12m.onnx / yolov12l.onnx / yolov12x.onnx —
+    # должно совпадать с MODEL_PATH воркера. Параметризовано через --model-name
+    # (Dockerfile передаёт build-arg MODEL_NAME).
     src = Path(path)
-    dst = out_dir / "yolov12m.onnx"
+    dst = out_dir / f"{args.model_name}.onnx"
     if src.is_file() and src.resolve() != dst.resolve():
         src.replace(dst)
         print(f"[export] moved → {dst}")
