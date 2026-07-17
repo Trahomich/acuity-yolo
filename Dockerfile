@@ -2,15 +2,18 @@
 # Dockerfile — образ inference-воркера acuity-yolo.
 #
 # Multi-stage:
-#   1. builder-{cpu|rocm} — venv с onnxruntime (cpu) или onnxruntime-rocm (rocm)
-#   2. exporter           — (опционально) экспорт YOLOv12m.pt → ONNX
-#   3. runtime-{cpu|rocm} — финальный образ; выбирается через FROM runtime-${DEVICE}
+#   1. builder-{cpu|gpu-amd} — venv с onnxruntime (cpu) или onnxruntime-rocm (gpu-amd)
+#   2. exporter              — (опционально) экспорт YOLOv12m.pt → ONNX
+#   3. runtime-{cpu|gpu-amd} — финальный образ; выбирается через FROM runtime-${DEVICE}
 #
-# DEVICE=cpu  → python:3.11-slim (лёгкий, переносимый). onnxruntime с PyPI.
-# DEVICE=rocm → rocm/dev-ubuntu-22.04:6.4 (полный ROCm 6.4, все HIP-либы внутри).
-#               onnxruntime-rocm 1.21.0 (cp310) с repo.radeon.com под Python 3.10,
-#               который является системным в Ubuntu 22.04 — НЕТ нужды в deadsnakes/PPA.
-#               Образ самодостаточен, не зависит от того, что стоит на хосте.
+# DEVICE=cpu     → python:3.11-slim (лёгкий, переносимый). onnxruntime с PyPI.
+# DEVICE=gpu-amd → rocm/dev-ubuntu-22.04:6.4-complete (полный ROCm 6.4, все
+#                  HIP-библиотеки и symlink-ферма внутри — libhipblas.so.2 и т.п.
+#                  на месте). onnxruntime-rocm 1.21.0 (cp310) с repo.radeon.com
+#                  под системный Python 3.10 Ubuntu 22.04.
+#                  Образ самодостаточен, не зависит от того, что стоит на хосте.
+#
+# Задел: DEVICE=gpu-nvidia — аналогично через nvidia/cuda-образы + onnxruntime-gpu.
 #
 # Шаг exporter управляется EXPORT_MODEL (по умолчанию 1).
 # EP в рантайме задаётся EXECUTION_PROVIDER и должно совпадать с DEVICE.
@@ -37,9 +40,9 @@ COPY requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
 ############################
-# Builder (ROCm): rocm/dev-ubuntu-22.04:6.4, системный Python 3.10
+# Builder (AMD GPU): rocm/dev-ubuntu-22.04:6.4-complete, системный Python 3.10
 ############################
-FROM rocm/dev-ubuntu-22.04:6.4 AS builder-rocm
+FROM rocm/dev-ubuntu-22.04:6.4-complete AS builder-gpu-amd
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -55,8 +58,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /build
-COPY requirements-rocm.txt scripts/clear_execstack.py ./
-RUN pip install --upgrade pip && pip install -r requirements-rocm.txt && \
+COPY requirements-gpu-amd.txt scripts/clear_execstack.py ./
+RUN pip install --upgrade pip && pip install -r requirements-gpu-amd.txt && \
     # onnxruntime .so имеет PT_GNU_STACK=RWE (executable stack). Docker seccomp
     # режет mprotect(PROT_EXEC) → ImportError. Снимаем X-бит через Python
     # (execstack/prelink убраны из Debian). https://github.com/microsoft/onnxruntime/issues/24911
@@ -127,13 +130,14 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
 
 ############################
-# Runtime — ROCm (AMD GPU)
+# Runtime — AMD GPU (ROCm)
 ############################
-FROM rocm/dev-ubuntu-22.04:6.4 AS runtime-rocm
+FROM rocm/dev-ubuntu-22.04:6.4-complete AS runtime-gpu-amd
 
-# Базовый образ содержит /opt/rocm с HIP-библиотеками ROCm 6.4. onnxruntime-rocm
-# 1.21.0 (cp310) собран под эту версию — soname совпадают (libhipblas.so.2 и т.п.).
-# Доустанавливаем только недостающие math-либы для onnxruntime + системные для opencv.
+# Базовый образ содержит /opt/rocm-6.4.0 с полной HIP-библиотечной фермой ROCm 6.4
+# (libamdhip64, libhipblas.so.2, libMIOpen и т.д.) + symlink /opt/rocm → версия.
+# onnxruntime-rocm 1.21.0 (cp310) собран под эту версию — soname совпадают.
+# Дополнительных apt-установок HIP-библиотек НЕ требуется — всё в образе.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
@@ -142,16 +146,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     # RDNA3 (gfx1100) иногда определяется как unsupported — фиксируем явно.
     HSA_OVERRIDE_GFX_VERSION="11.0.0"
 
-RUN ln -sfn /opt/rocm-6.4.0 /opt/rocm \
-    && apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 libglib2.0-0 ca-certificates tini \
-        hipblas miopen-hip rocblas rocfft \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 yolo \
     && useradd --system --uid 10001 --gid yolo --no-create-home --home-dir /app yolo
 
-# venv из builder-rocm (тот же базовый образ + системный Python 3.10).
-COPY --from=builder-rocm /opt/venv /opt/venv
+# venv из builder-gpu-amd (тот же базовый образ + системный Python 3.10).
+COPY --from=builder-gpu-amd /opt/venv /opt/venv
 
 WORKDIR /app
 COPY app/ ./app/

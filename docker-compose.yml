@@ -1,11 +1,16 @@
 services:
   worker:
-    image: ghcr.io/trahomich/acuity-yolo/worker:${DEVICE:-cpu}
+    # Образ выбирается DEVICE: cpu или gpu-amd.
+    #   cpu     → ghcr.io/trahomich/acuity-yolo/worker:cpu     (onnxruntime, python:slim)
+    #   gpu-amd → ghcr.io/trahomich/acuity-yolo/worker:gpu-amd (onnxruntime-rocm, rocm/dev)
+    image: ghcr.io/trahomich/acuity-yolo/worker:${DEVICE:-gpu-amd}
     container_name: acuity-yolo-worker
     pull_policy: always
     restart: unless-stopped
     environment:
-      EXECUTION_PROVIDER: ${EXECUTION_PROVIDER:-${DEVICE:-cpu}}
+      # EXECUTION_PROVIDER по умолчанию выводится из DEVICE (cpu→cpu, gpu-amd→rocm).
+      # Можно переопределить явно в .env.
+      EXECUTION_PROVIDER: ${EXECUTION_PROVIDER:-${GPU_EP:-rocm}}
       CONF_THRESHOLD: ${CONF_THRESHOLD:-0.4}
       IOU_THRESHOLD: ${IOU_THRESHOLD:-0.5}
       INPUT_SIZE: ${INPUT_SIZE:-640}
@@ -14,33 +19,9 @@ services:
       MODEL_PATH: ${MODEL_PATH:-models/yolov12m.onnx}
     ports:
       - "${WORKER_HTTP_PORT:-9104}:8000"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    deploy:
-      resources:
-        limits:
-          memory: ${WORKER_MEMORY:-2g}
-
-  worker-gpu:
-    image: ghcr.io/trahomich/acuity-yolo/worker:${DEVICE:-rocm}
-    container_name: acuity-yolo-worker
-    pull_policy: always
-    restart: unless-stopped
-    profiles: ["gpu"]
-    environment:
-      EXECUTION_PROVIDER: rocm
-      CONF_THRESHOLD: ${CONF_THRESHOLD:-0.4}
-      IOU_THRESHOLD: ${IOU_THRESHOLD:-0.5}
-      INPUT_SIZE: ${INPUT_SIZE:-640}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-      MODEL_NAME: ${MODEL_NAME:-yolov12m}
-      MODEL_PATH: ${MODEL_PATH:-models/yolov12m.onnx}
-    ports:
-      - "${WORKER_HTTP_PORT:-9104}:8000"
+    # ── AMD GPU (ROCm). Нужен только для DEVICE=gpu-amd. ──
+    # Для чисто-CPU деплоя (DEVICE=cpu) ЗАКОММЕНТИРУЙТЕ этот блок целиком —
+    # на хосте без GPU Docker откажется стартовать контейнер (no such device).
     devices:
       - /dev/kfd
       - /dev/dri
@@ -61,11 +42,13 @@ services:
         limits:
           memory: ${WORKER_MEMORY:-4g}
 
+  # Опциональный redis для будущего кеша/очереди (тираж 2). Не используется
+  # воркером в тираже 1 — можно убрать. Запуск отдельной командой:
+  #   docker compose up redis
   redis:
     image: redis:7-alpine
     container_name: acuity-yolo-redis
     restart: unless-stopped
-    profiles: ["with-redis"]
     volumes:
       - redis-data:/data
 

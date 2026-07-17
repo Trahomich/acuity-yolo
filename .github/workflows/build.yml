@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        device: [cpu, rocm]
+        device: [cpu, gpu-amd]
     steps:
       - uses: actions/checkout@v4
 
