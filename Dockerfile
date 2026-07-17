@@ -2,54 +2,42 @@
 # Dockerfile — образ inference-воркера acuity-yolo.
 #
 # Multi-stage:
-#   1. builder     — ставит runtime-зависимости в venv (python:3.12-slim)
-#   2. exporter    — (опционально) экспортирует YOLOv12m.pt → ONNX через ultralytics
-#   3. runtime     — финальный образ; зависит от DEVICE:
-#                      cpu  → python:3.12-slim (лёгкий, переносимый)
-#                      rocm → rocm/dev-ubuntu-22.04:6.4 (полный ROCm 6.4,
-#                             все HIP-библиотеки нужных версий внутри, ~1.5 ГБ)
+#   1. builder-{cpu|rocm} — venv с onnxruntime (cpu) или onnxruntime-rocm (rocm)
+#   2. exporter           — (опционально) экспорт YOLOv12m.pt → ONNX
+#   3. runtime-{cpu|rocm} — финальный образ; выбирается через FROM runtime-${DEVICE}
 #
-# Шаг exporter управляется build-arg EXPORT_MODEL (по умолчанию 1). Чтобы
-# отключить экспорт (модель монтируется volume или копируется вручную), собирайте:
-#   docker build --build-arg EXPORT_MODEL=0 -t acuity-yolo .
+# DEVICE=cpu  → python:3.11-slim (лёгкий, переносимый). onnxruntime с PyPI.
+# DEVICE=rocm → rocm/dev-ubuntu-22.04:6.4 (полный ROCm 6.4, все HIP-либы внутри).
+#               onnxruntime-rocm 1.21.0 (cp310) с repo.radeon.com под Python 3.10,
+#               который является системным в Ubuntu 22.04 — НЕТ нужды в deadsnakes/PPA.
+#               Образ самодостаточен, не зависит от того, что стоит на хосте.
 #
-# Execution Provider:
-#   DEVICE=cpu → onnxruntime (CPU), python:3.12-slim.
-#   DEVICE=rocm → onnxruntime-rocm 1.21.0 (ROCm 6.4), базовый образ rocm/dev.
-#   ROCm-вариант самодостаточен: HIP-библиотеки внутри образа, НЕ зависит от
-#   того, что установлено на хосте. Нужен только amdgpu-драйвер + /dev/kfd,/dev/dri.
-#   EP в рантайме задаётся EXECUTION_PROVIDER и должно совпадать с DEVICE.
+# Шаг exporter управляется EXPORT_MODEL (по умолчанию 1).
+# EP в рантайме задаётся EXECUTION_PROVIDER и должно совпадать с DEVICE.
 
 # Глобальный ARG — виден во всех stages, включая FROM runtime-${DEVICE}.
-# Передаётся как --build-arg DEVICE=cpu|rocm.
 ARG DEVICE=cpu
 
 ############################
-# Builder (CPU): venv на python:3.12-slim
+# Builder (CPU): python:3.11-slim
 ############################
-FROM python:3.12-slim AS builder
+FROM python:3.11-slim AS builder-cpu
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /build
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-
+WORKDIR /build
 COPY requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
 ############################
-# Builder (ROCm): venv на rocm/dev-ubuntu-22.04:6.4
-# Нужен ОТДЕЛЬНЫЙ builder, т.к. venv хранит симлинки на интерпретатор и НЕ
-# переносим между базовыми образами. Python 3.12 ставим через deadsnakes PPA
-# (Ubuntu 22.04 несёт только 3.10, а колесо onnxruntime-rocm собрано под cp312).
+# Builder (ROCm): rocm/dev-ubuntu-22.04:6.4, системный Python 3.10
 ############################
 FROM rocm/dev-ubuntu-22.04:6.4 AS builder-rocm
 
@@ -58,29 +46,25 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# Python 3.10 уже в образе (Ubuntu 22.04). Ставим только pip и build-essential.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        software-properties-common gnupg build-essential wget \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        python3.12 python3.12-venv python3.12-dev \
+        python3-pip python3-dev build-essential \
     && rm -rf /var/lib/apt/lists/* \
-    && python3.12 -m venv /opt/venv
-
+    && python3 -m pip install --upgrade pip \
+    && python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /build
-
 COPY requirements-rocm.txt scripts/clear_execstack.py ./
 RUN pip install --upgrade pip && pip install -r requirements-rocm.txt && \
-    # ROCm-сборка onnxruntime имеет .so с PT_GNU_STACK=RWE (executable stack).
-    # Docker seccomp режет mprotect(PROT_EXEC) → ImportError при загрузке.
-    # Снимаем X-бит напрямую через Python (execstack/prelink убраны из Debian).
-    # https://github.com/microsoft/onnxruntime/issues/24911
+    # onnxruntime .so имеет PT_GNU_STACK=RWE (executable stack). Docker seccomp
+    # режет mprotect(PROT_EXEC) → ImportError. Снимаем X-бит через Python
+    # (execstack/prelink убраны из Debian). https://github.com/microsoft/onnxruntime/issues/24911
     python clear_execstack.py
 
 ############################
-# Exporter: YOLOv12m.pt → ONNX (опциональный шаг)
+# Exporter: YOLOv12m.pt → ONNX (опционально)
 ############################
-FROM python:3.12-slim AS exporter
+FROM python:3.11-slim AS exporter
 
 ARG EXPORT_MODEL=1
 ARG MODEL_SPEC=yolo12m.pt
@@ -99,9 +83,6 @@ COPY export_model.py ./
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
         libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libxcb1 \
     && rm -rf /var/lib/apt/lists/*
-
-# Готовим целевой каталог заранее (COPY --from=exporter требует его наличия
-# даже если экспорт выключен — тогда воркер стартует not-ready).
 RUN mkdir -p /export/models
 
 # Если EXPORT_MODEL=1 — ставим ultralytics (CPU-only torch) и экспортируем YOLO.
@@ -118,7 +99,7 @@ RUN if [ "$EXPORT_MODEL" = "1" ]; then \
 ############################
 # Runtime — CPU
 ############################
-FROM python:3.12-slim AS runtime-cpu
+FROM python:3.11-slim AS runtime-cpu
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -131,7 +112,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && groupadd --system --gid 10001 yolo \
     && useradd --system --uid 10001 --gid yolo --no-create-home --home-dir /app yolo
 
-COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder-cpu /opt/venv /opt/venv
 
 WORKDIR /app
 COPY app/ ./app/
@@ -149,10 +130,9 @@ CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "
 ############################
 FROM rocm/dev-ubuntu-22.04:6.4 AS runtime-rocm
 
-# Базовый образ уже содержит /opt/rocm с HIP-библиотеками ROCm 6.4
-# (libamdhip64, libhiprtc, libMIOpen и т.д.). onnxruntime-rocm 1.21.0 собран
-# под эту версию — soname совпадают (libhipblas.so.2 и т.п.).
-# Доустанавливаем только то, чего нет в dev-образе, но нужно onnxruntime.
+# Базовый образ содержит /opt/rocm с HIP-библиотеками ROCm 6.4. onnxruntime-rocm
+# 1.21.0 (cp310) собран под эту версию — soname совпадают (libhipblas.so.2 и т.п.).
+# Доустанавливаем только недостающие math-либы для onnxruntime + системные для opencv.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
@@ -161,9 +141,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     # RDNA3 (gfx1100) иногда определяется как unsupported — фиксируем явно.
     HSA_OVERRIDE_GFX_VERSION="11.0.0"
 
-# onnxruntime-rocm требует hipblas/miopen/rocblas/rocfft — ставим из ROCm-репо,
-# который уже настроен в базовом образе. Python НЕ ставим: venv из builder-rocm
-# несёт свой интерпретатор 3.12. tini для корректных сигналов.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 libglib2.0-0 ca-certificates tini \
         hipblas miopen-hip rocblas rocfft \
@@ -171,8 +148,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && groupadd --system --gid 10001 yolo \
     && useradd --system --uid 10001 --gid yolo --no-create-home --home-dir /app yolo
 
-# venv из builder-rocm (тот же базовый образ + Python 3.12) — интерпретатор
-# совместим, симлинки валидны.
+# venv из builder-rocm (тот же базовый образ + системный Python 3.10).
 COPY --from=builder-rocm /opt/venv /opt/venv
 
 WORKDIR /app
