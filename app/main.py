@@ -141,6 +141,7 @@ async def detect(image: UploadFile = File(...)) -> JSONResponse:
     for d in dets:
         boxes.append(Box(
             cls=d.cls,
+            cls_id=d.cls_id,
             score=round(d.score, 4),
             x=int(round(d.x1)),
             y=int(round(d.y1)),

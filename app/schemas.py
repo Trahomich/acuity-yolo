@@ -4,7 +4,7 @@
 
     POST /detect (multipart: image=JPEG)
     → 200 {
-        "boxes": [{"cls","score","x","y","w","h"}],
+        "boxes": [{"cls","cls_id","score","x","y","w","h"}],
         "classes": ["person"],
         "inference_ms": 47,
         "ep": "cpu"
@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 class Box(BaseModel):
     cls: str = Field(description="Имя класса COCO, напр. 'person'")
+    cls_id: int = Field(description="Числовой ID класса COCO (0..79)")
     score: float = Field(description="Уверенность 0..1")
     x: int = Field(description="X верхнего-левого угла (px исходного кадра)")
     y: int = Field(description="Y верхнего-левого угла (px исходного кадра)")
