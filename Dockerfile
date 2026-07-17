@@ -1,72 +1,32 @@
 # syntax=docker/dockerfile:1.6
 # Dockerfile — образ inference-воркера acuity-yolo.
 #
-# Multi-stage:
-#   1. builder-{cpu|gpu-amd} — venv с onnxruntime (cpu) или onnxruntime-rocm (gpu-amd)
-#   2. exporter              — (опционально) экспорт YOLOv12m.pt → ONNX
-#   3. runtime-{cpu|gpu-amd} — финальный образ; выбирается через FROM runtime-${DEVICE}
+# Структура (упрощена из multi-stage: убраны builder-стадии):
+#   1. exporter          — отдельная стадия только для экспорта YOLO→ONNX
+#                          (ultralytics/torch тяжёлые, не нужны в рантайме).
+#   2. runtime-{cpu|gpu-amd} — финальный образ, выбирается через FROM runtime-${DEVICE}.
 #
-# DEVICE=cpu     → python:3.11-slim (лёгкий, переносимый). onnxruntime с PyPI.
+# Почему без builder-стадий: перенос venv между базовыми образами (python:slim ↔
+# rocm/dev) нестабилен — venv хранит симлинки на интерпретатор. Для ROCm это уже
+# породило отдельный builder-gpu-amd на той же базе + каскад проблем с ARG в FROM.
+# Для CPU multi-stage тоже почти не даёт выгоды (образ <300МБ и так). Поэтому
+# venv создаётся прямо в runtime-стадии — проще, короче, меньше точек отказа.
+#
+# DEVICE=cpu     → python:3.11-slim + onnxruntime (PyPI, cp311).
 # DEVICE=gpu-amd → rocm/dev-ubuntu-22.04:6.4-complete (полный ROCm 6.4, все
 #                  HIP-библиотеки и symlink-ферма внутри — libhipblas.so.2 и т.п.
 #                  на месте). onnxruntime-rocm 1.21.0 (cp310) с repo.radeon.com
 #                  под системный Python 3.10 Ubuntu 22.04.
-#                  Образ самодостаточен, не зависит от того, что стоит на хосте.
+# Задел: DEVICE=gpu-nvidia — через nvidia/cuda-образы + onnxruntime-gpu.
 #
-# Задел: DEVICE=gpu-nvidia — аналогично через nvidia/cuda-образы + onnxruntime-gpu.
-#
-# Шаг exporter управляется EXPORT_MODEL (по умолчанию 1).
 # EP в рантайме задаётся EXECUTION_PROVIDER и должно совпадать с DEVICE.
 
 # Глобальный ARG — виден во всех stages, включая FROM runtime-${DEVICE}.
 ARG DEVICE=cpu
 
 ############################
-# Builder (CPU): python:3.11-slim
-############################
-FROM python:3.11-slim AS builder-cpu
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
-
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
-    && rm -rf /var/lib/apt/lists/*
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-WORKDIR /build
-COPY requirements.txt ./
-RUN pip install --upgrade pip && pip install -r requirements.txt
-
-############################
-# Builder (AMD GPU): rocm/dev-ubuntu-22.04:6.4-complete, системный Python 3.10
-############################
-FROM rocm/dev-ubuntu-22.04:6.4-complete AS builder-gpu-amd
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
-
-# Python 3.10 уже в образе (Ubuntu 22.04), но модуль venv вынесен в отдельный
-# пакет python3.10-venv — без него `python3 -m venv` падает.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3-pip python3.10-venv python3-dev build-essential \
-    && rm -rf /var/lib/apt/lists/* \
-    && python3 -m pip install --upgrade pip \
-    && python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-WORKDIR /build
-COPY requirements-gpu-amd.txt scripts/clear_execstack.py ./
-RUN pip install --upgrade pip && pip install -r requirements-gpu-amd.txt && \
-    # onnxruntime .so имеет PT_GNU_STACK=RWE (executable stack). Docker seccomp
-    # режет mprotect(PROT_EXEC) → ImportError. Снимаем X-бит через Python
-    # (execstack/prelink убраны из Debian). https://github.com/microsoft/onnxruntime/issues/24911
-    python clear_execstack.py
-
-############################
-# Exporter: YOLOv12m.pt → ONNX (опционально)
+# Exporter: YOLOv12m.pt → ONNX (опционально, отдельная стадия)
+# ultralytics/torch нужны ТОЛЬКО здесь; в runtime не попадают.
 ############################
 FROM python:3.11-slim AS exporter
 
@@ -111,12 +71,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ACUITY_WORKER_CONFIG=/etc/acuity-yolo/configs/worker.yml
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libglib2.0-0 ca-certificates tini \
+        python3-venv libgl1 libglib2.0-0 ca-certificates tini \
     && rm -rf /var/lib/apt/lists/* \
+    && python -m venv /opt/venv \
     && groupadd --system --gid 10001 yolo \
     && useradd --system --uid 10001 --gid yolo --no-create-home --home-dir /app yolo
 
-COPY --from=builder-cpu /opt/venv /opt/venv
+COPY requirements.txt ./
+RUN /opt/venv/bin/pip install --upgrade pip && /opt/venv/bin/pip install -r requirements.txt
 
 WORKDIR /app
 COPY app/ ./app/
@@ -130,7 +92,7 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
 
 ############################
-# Runtime — AMD GPU (ROCm)
+# Runtime — AMD GPU (ROCm), одностадийный
 ############################
 FROM rocm/dev-ubuntu-22.04:6.4-complete AS runtime-gpu-amd
 
@@ -146,14 +108,24 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     # RDNA3 (gfx1100) иногда определяется как unsupported — фиксируем явно.
     HSA_OVERRIDE_GFX_VERSION="11.0.0"
 
+# Системный Python 3.10 (Ubuntu 22.04). venv-модуль в отдельном пакете python3.10-venv.
+# opencv-headless требует libgl1/libglib. tini для корректных сигналов.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3-pip python3.10-venv python3-dev build-essential \
         libgl1 libglib2.0-0 ca-certificates tini \
     && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/venv \
     && groupadd --system --gid 10001 yolo \
     && useradd --system --uid 10001 --gid yolo --no-create-home --home-dir /app yolo
 
-# venv из builder-gpu-amd (тот же базовый образ + системный Python 3.10).
-COPY --from=builder-gpu-amd /opt/venv /opt/venv
+COPY requirements-gpu-amd.txt scripts/clear_execstack.py /tmp/build/
+RUN /opt/venv/bin/pip install --upgrade pip \
+    && /opt/venv/bin/pip install -r /tmp/build/requirements-gpu-amd.txt \
+    # onnxruntime .so имеет PT_GNU_STACK=RWE (executable stack). Docker seccomp
+    # режет mprotect(PROT_EXEC) → ImportError. Снимаем X-бит через Python
+    # (execstack/prelink убраны из Debian). https://github.com/microsoft/onnxruntime/issues/24911
+    && /opt/venv/bin/python /tmp/build/clear_execstack.py \
+    && rm -rf /tmp/build
 
 WORKDIR /app
 COPY app/ ./app/
