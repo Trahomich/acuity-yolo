@@ -49,15 +49,34 @@ RUN REQ=$([ "$DEVICE" = "rocm" ] && echo requirements-rocm.txt || echo requireme
     # (PT_GNU_STACK = RWE). Без прав на mprotect(PROT_EXEC) рантайм падает:
     #   "cannot enable executable stack as shared object requires: Invalid argument"
     # seccomp:unconfined в compose НЕ лечит (Docker всё равно режет). Снимаем
-    # бит execstack с проблемных .so прямо в образе через execstack -c.
-    # См. https://github.com/microsoft/onnxruntime/issues/24911
+    # X-бит в PT_GNU_STACK у проблемных .so прямо в образе.
+    # execstack/prelink убраны из Debian → правим ELF напрямую на чистом Python
+    # (без установки пакетов). См. https://github.com/microsoft/onnxruntime/issues/24911
     if [ "$DEVICE" = "rocm" ]; then \
-        apt-get update && apt-get install -y --no-install-recommends execstack && \
-        find /opt/venv/lib -name "onnxruntime_pybind11_state.so" \
-             -o -name "libonnxruntime_providers_rocm.so" \
-             -o -name "libonnxruntime_*.so" \
-             2>/dev/null | while read so; do execstack -c "$so" 2>/dev/null || true; done && \
-        rm -rf /var/lib/apt/lists/*; \
+        python - <<'PYEOF'
+import glob, struct
+for so in glob.glob('/opt/venv/lib/python*/site-packages/onnxruntime/capi/*.so') + \
+          glob.glob('/opt/venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.so'):
+    with open(so, 'r+b') as f:
+        f.seek(0)
+        if f.read(4) != b'\x7fELF': continue
+        ei_class = f.read(1)[0]            # 1=32bit, 2=64bit
+        f.seek(40 if ei_class == 2 else 28)
+        phoff = struct.unpack('<Q' if ei_class == 2 else '<I', f.read(8 if ei_class == 2 else 4))[0]
+        f.seek(54 if ei_class == 2 else 42)
+        phentsize, phnum = struct.unpack('<HH', f.read(4))
+        for i in range(phnum):
+            f.seek(phoff + i*phentsize)
+            p_type, p_flags = struct.unpack('<II', f.read(8))  # только для ELF64
+            if p_type == 0x6474e551:  # PT_GNU_STACK
+                cur = f.tell()
+                f.seek(cur - 4)                       # вернулись к p_flags
+                f.write(struct.pack('<I', p_flags & ~1))  # сброс PF_X (0x1)
+                print(f'cleared execstack: {so}')
+                break
+        else:
+            print(f'no PT_GNU_STACK: {so}')
+PYEOF
     fi
 
 ############################
