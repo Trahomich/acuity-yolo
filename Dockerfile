@@ -46,9 +46,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Python 3.10 уже в образе (Ubuntu 22.04). Ставим только pip и build-essential.
+# Python 3.10 уже в образе (Ubuntu 22.04), но модуль venv вынесен в отдельный
+# пакет python3.10-venv — без него `python3 -m venv` падает.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3-pip python3-dev build-essential \
+        python3-pip python3.10-venv python3-dev build-essential \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m pip install --upgrade pip \
     && python3 -m venv /opt/venv
