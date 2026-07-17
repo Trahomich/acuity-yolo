@@ -63,14 +63,6 @@ services:
         limits:
           memory: ${WORKER_MEMORY:-4g}
 
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: acuity-yolo-cloudflared
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
-    depends_on:
-      - worker
-
   redis:
     image: redis:7-alpine
     container_name: acuity-yolo-redis
