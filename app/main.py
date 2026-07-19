@@ -18,6 +18,7 @@ Stateless REST-сервис: модель грузится в память пр�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -87,7 +88,7 @@ app = FastAPI(
 )
 
 
-def _decode_image(raw: bytes, max_bytes: int) -> np.ndarray:
+def _decode_image(raw: bytes, max_bytes: int, max_pixels: int) -> np.ndarray:
     if not raw:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="empty image")
     if len(raw) > max_bytes:
@@ -101,6 +102,14 @@ def _decode_image(raw: bytes, max_bytes: int) -> np.ndarray:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="cannot decode image (expected JPEG/PNG)",
+        )
+    # Защита от decompression-bomb: компактный файл может распаковаться в
+    # гигантский массив пикселей → OOM. Ограничиваем H*W.
+    h, w = img.shape[:2]
+    if h * w > max_pixels:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"decoded image too large: {w}x{h} = {h*w} pixels (max {max_pixels})",
         )
     return img
 
@@ -125,10 +134,19 @@ async def detect(image: UploadFile = File(...)) -> JSONResponse:
         )
 
     raw = await image.read()
-    img = _decode_image(raw, settings.max_image_bytes)
+
+    # Декод и инференс — blocking (cv2 + onnxruntime). Выполняем в потоке, чтобы
+    # не блокировать event loop: пока идёт инференс одного запроса, сервер может
+    # принимать новые и отвечать на /healthz (иначе healthcheck флапает под
+    # нагрузкой → рестарты). onnxruntime отпускает GIL во время session.run.
+    def _decode_and_detect() -> tuple[list, int]:
+        img = _decode_image(raw, settings.max_image_bytes, settings.max_image_pixels)
+        return model.detect(img)  # type: ignore[union-attr]
 
     try:
-        dets, inference_ms = model.detect(img)  # type: ignore[union-attr]
+        dets, inference_ms = await asyncio.to_thread(_decode_and_detect)
+    except HTTPException:
+        raise  # 400/413 из _decode_image — пробрасываем как есть
     except Exception:
         log.exception("inference failed")
         return JSONResponse(
@@ -150,25 +168,24 @@ async def detect(image: UploadFile = File(...)) -> JSONResponse:
         ))
         classes_seen.add(d.cls)
 
-    log.info(
-        "detect",
-        extra={
-            "inference_ms": inference_ms,
-            "boxes_count": len(boxes),
-            "classes": sorted(classes_seen) if classes_seen else [],
-            # Полный вывод боксов: cls, cls_id, score, координаты xywh.
-            # Удобно для отладки и аудита детекций в логе.
-            "detections": [
-                {
-                    "cls": b.cls,
-                    "cls_id": b.cls_id,
-                    "score": b.score,
-                    "x": b.x, "y": b.y, "w": b.w, "h": b.h,
-                }
-                for b in boxes
-            ],
-        },
-    )
+    # INFO: только агрегаты (быстро, без сериализации боксов на каждый запрос).
+    # DEBUG: полный список детекций для отладки (включается LOG_LEVEL=debug).
+    log_extra: dict = {
+        "inference_ms": inference_ms,
+        "boxes_count": len(boxes),
+        "classes": sorted(classes_seen) if classes_seen else [],
+    }
+    if log.isEnabledFor(logging.DEBUG):
+        log_extra["detections"] = [
+            {
+                "cls": b.cls,
+                "cls_id": b.cls_id,
+                "score": b.score,
+                "x": b.x, "y": b.y, "w": b.w, "h": b.h,
+            }
+            for b in boxes
+        ]
+    log.info("detect", extra=log_extra)
 
     resp = DetectResponse(
         boxes=boxes,

@@ -69,8 +69,15 @@ class Settings(BaseSettings):
     # Уровень логирования.
     log_level: str = Field(default="info")
 
-    # Максимальный размер загружаемого изображения (байт); защита от OOM.
+    # Максимальный размер загружаемого изображения (байт); защита от OOM
+    # при передаче (spool-файл).
     max_image_bytes: int = Field(default=20 * 1024 * 1024)
+
+    # Максимальное число пикселей в ДЕКОДИРОВАННОМ изображении. Защита от
+    # decompression-bomb: компактный PNG/JPEG может распаковаться в гигантский
+    # массив пикселей при малом числе байт → OOM. По умолчанию 4096×4096 ≈
+    # 16.8 Мpx (покрывает 4K CCTV). Поднимается через env MAX_IMAGE_PIXELS.
+    max_image_pixels: int = Field(default=4096 * 4096, ge=1024)
 
     @property
     def model_file(self) -> Path:
