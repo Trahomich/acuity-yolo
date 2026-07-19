@@ -18,7 +18,6 @@ Stateless REST-сервис: модель грузится в память пр�
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -135,16 +134,17 @@ async def detect(image: UploadFile = File(...)) -> JSONResponse:
 
     raw = await image.read()
 
-    # Декод и инференс — blocking (cv2 + onnxruntime). Выполняем в потоке, чтобы
-    # не блокировать event loop: пока идёт инференс одного запроса, сервер может
-    # принимать новые и отвечать на /healthz (иначе healthcheck флапает под
-    # нагрузкой → рестарты). onnxruntime отпускает GIL во время session.run.
-    def _decode_and_detect() -> tuple[list, int]:
-        img = _decode_image(raw, settings.max_image_bytes, settings.max_image_pixels)
-        return model.detect(img)  # type: ignore[union-attr]
-
+    # ВНИМАНИЕ: decode и inference выполняются СИНХРОННО в event loop. Это
+    # намеренно, не упущение: одна ONNX-сессия НЕ потокобезопасна для
+    # конкурентных session.run() — попытка asyncio.to_thread приводила к
+    # гонке в MIOpen ("No invoker registered for conv", MIOPEN failure 7),
+    # т.к. find-фаза одного потока конкурировала с forward-фазой другого.
+    # onnxruntime отпускает GIL, но общий ROCm/MIOpen state на это не рассчитан.
+    # Параллелизм достигается uvicorn-воркерами (отдельные процессы = отдельные
+    # сессии) или репликами, а НЕ потоками одной сессии.
     try:
-        dets, inference_ms = await asyncio.to_thread(_decode_and_detect)
+        img = _decode_image(raw, settings.max_image_bytes, settings.max_image_pixels)
+        dets, inference_ms = model.detect(img)  # type: ignore[union-attr]
     except HTTPException:
         raise  # 400/413 из _decode_image — пробрасываем как есть
     except Exception:
