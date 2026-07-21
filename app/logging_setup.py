@@ -6,6 +6,10 @@ level, time и всеми extra-полями. Уровень из ACUITY_LOG_LEV
 Если задан victorialogs_url — логи дублируются в VictoriaMetrics/VictoriaLogs
 через OTLP HTTP API (/insert/opentelemetry/v1/logs). Отправка идёт в фоновом
 потоке через очередь (drop+warn при переполнении / недоступности).
+
+Формат: Protobuf (ExportLogsServiceRequest). VictoriaLogs v1.x принимает
+только protobuf на OTLP endpoint, не JSON — поэтому используется готовый
+сгенерированный код из PyPI-пакета opentelemetry-proto.
 """
 
 from __future__ import annotations
@@ -19,6 +23,13 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any
+
+# Готовые OTLP protobuf-сообщения (из pip install opentelemetry-proto).
+# Импорты тяжёлые (~30 МБ), но ленивые — в __init__ handler'а, чтобы
+# не тащить protobuf в образы без victorialogs_url (import-time fallback).
+from opentelemetry.proto.collector.logs.v1 import logs_service_pb2 as _pb_logs_service
+from opentelemetry.proto.logs.v1 import logs_pb2 as _pb_logs
+from opentelemetry.proto.common.v1 import common_pb2 as _pb_common
 
 # Имена полей выровнены с тем, как их ждёт стеклянка acuity-server
 # (component/level/msg/err/time) для единообразия логов.
@@ -122,15 +133,22 @@ class VictoriaLogsHandler(logging.Handler):
         sys.stderr.flush()
 
     def _build_otlp_payload(self, batch: list[dict[str, Any]]) -> bytes:
-        """Формирует OTLP HTTP JSON body из батча лог-записей.
+        """Строит Protobuf ExportLogsServiceRequest из батча лог-записей.
 
-        Формат: resourceLogs → scopeLogs → logRecords. Каждая logRecord:
-          timeUnixNano, observedTimeUnixNano, severityNumber, severityText,
-          body{stringValue}, attributes[{key,value{stringValue}}].
-        Extra-поля идут как attributes (фильтрация/группировка в VictoriaLogs).
+        Структура (канонический OTLP): ResourceLogs → ScopeLogs → LogRecord.
+        Extra-поля идут как AnyValue attributes (фильтрация/группировка в
+        VictoriaLogs через LogsQL).
         """
-        now_ns = str(int(time.time() * 1e9))
-        log_records = []
+        now_ns = int(time.time() * 1e9)
+        request = _pb_logs_service.ExportLogsServiceRequest()
+        resource_logs = request.resource_logs.add()
+        resource_logs.resource.attributes.append(_pb_common.KeyValue(
+            key="service.name",
+            value=_pb_common.AnyValue(string_value=self.service_name),
+        ))
+        scope_logs = resource_logs.scope_logs.add()
+        scope_logs.scope.name = "acuity-yolo"
+
         for p in batch:
             # Парсим ISO-время записи обратно в ns.
             ts_str = p.get("time", "")
@@ -138,46 +156,41 @@ class VictoriaLogsHandler(logging.Handler):
             try:
                 # "2026-07-19T..." → unix-секунды.
                 dt = time.strptime(ts_str[:19], "%Y-%m-%dT%H:%M:%S")
-                ts_unix_ns = str(int(time.mktime(dt)) * 10**9)
+                ts_unix_ns = int(time.mktime(dt)) * 10**9
             except (ValueError, OverflowError):
                 pass
+
             level_upper = str(p.get("level", "info")).upper()
             sev_num = _SEVERITY_NUM.get(level_upper, 9)
-            attrs = [
-                {"key": k, "value": {"stringValue": str(v)}}
-                for k, v in p.items()
-                if k not in ("msg", "time", "level")
-            ]
-            log_records.append({
-                "timeUnixNano": ts_unix_ns,
-                "observedTimeUnixNano": now_ns,
-                "severityNumber": sev_num,
-                "severityText": level_upper,
-                "body": {"stringValue": str(p.get("msg", ""))},
-                "attributes": attrs,
-            })
-        return json.dumps({
-            "resourceLogs": [{
-                "resource": {
-                    "attributes": [{
-                        "key": "service.name",
-                        "value": {"stringValue": self.service_name},
-                    }]
-                },
-                "scopeLogs": [{
-                    "scope": {"name": "acuity-yolo"},
-                    "logRecords": log_records,
-                }],
-            }],
-        }).encode("utf-8")
+
+            log_record = scope_logs.log_records.add()
+            log_record.time_unix_nano = ts_unix_ns
+            log_record.observed_time_unix_nano = now_ns
+            log_record.severity_number = sev_num
+            log_record.severity_text = level_upper
+            log_record.body.string_value = str(p.get("msg", ""))
+
+            # Extra-поля как attributes (key + AnyValue).
+            for key, value in p.items():
+                if key in ("msg", "time", "level"):
+                    continue
+                attr = log_record.attributes.add()
+                attr.key = key
+                # Все значения стрингифицируем — VictoriaLogs индексирует
+                # значения как строки, AnyValue.string_value — самый совместимый
+                # путь (числа можно фильтровать через range-синтаксис LogsQL).
+                attr.value.string_value = str(value)
+
+        return request.SerializeToString()
 
     def _post(self, body: bytes) -> bool:
-        """POST батча в OTLP endpoint. Возвращает True при успехе."""
+        """POST protobuf-батча в OTLP endpoint. Возвращает True при успехе."""
         req = urllib.request.Request(
             self.url,
             data=body,
             method="POST",
-            headers={"Content-Type": "application/json"},
+            # VictoriaLogs принимает только protobuf на OTLP endpoint.
+            headers={"Content-Type": "application/x-protobuf"},
         )
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:

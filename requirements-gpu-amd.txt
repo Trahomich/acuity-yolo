@@ -31,3 +31,5 @@ PyYAML==6.0.2
 onnxruntime-rocm @ https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/onnxruntime_rocm-1.21.0-cp310-cp310-linux_x86_64.whl
 opencv-python-headless==4.10.0.84
 numpy<2
+# OTLP-логирование в VictoriaLogs (см. requirements.txt).
+opentelemetry-proto==1.30.0
