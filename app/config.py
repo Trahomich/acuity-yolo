@@ -79,6 +79,25 @@ class Settings(BaseSettings):
     # 16.8 Мpx (покрывает 4K CCTV). Поднимается через env MAX_IMAGE_PIXELS.
     max_image_pixels: int = Field(default=4096 * 4096, ge=1024)
 
+    # ── Удалённое логирование (VictoriaLogs через OTLP HTTP). ──
+    # Если victorialogs_url пуст (по умолчанию) — remote-отправка выключена,
+    # логи идут только в stderr. Если задан — каждый лог дублируется POST'ом
+    # в OTLP-совместимый endpoint (VictoriaLogs, VictoriaMetrics, любой OTLP).
+    # Формат: http://host:port/insert/opentelemetry/v1/logs
+    victorialogs_url: str = Field(default="")
+    # Имя сервиса для OTLP resource-атрибута service.name. По умолчанию имя
+    # модели — позволяет различать воркеры разных моделей в общем логе.
+    log_service_name: str = Field(default="acuity-yolo")
+    # Периодичность отправки батча (секунды). Поток копит логи в очереди и
+    # флешит раз в N секунд либо при достижении batch_size.
+    log_flush_interval: float = Field(default=2.0, ge=0.5)
+    # Размер батча (число лог-записей). При достижении — внеплановый flush.
+    log_batch_size: int = Field(default=64, ge=1)
+    # Максимальный размер очереди. При переполнении старые логи дропаются
+    # (drop+warn стратегия — лучше потерять remote-копию, чем заблокировать
+    # логирование или расти по RAM).
+    log_queue_max: int = Field(default=4096, ge=16)
+
     @property
     def model_file(self) -> Path:
         return Path(self.model_path)

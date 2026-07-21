@@ -22,6 +22,11 @@ services:
       # Число uvicorn-воркеров (параллельный инференс). Каждый грузит свою копию
       # модели в RAM — поднимать с учётом лимита памяти контейнера.
       UVICORN_WORKERS: ${UVICORN_WORKERS:-1}
+      # ── Удалённое логирование в VictoriaLogs (OTLP HTTP). ──
+      # Пусто → только stderr. Задайте URL для дублирования всех логов
+      # (с extra-полями как OTLP attributes) в централизованный storage.
+      VICTORIALOGS_URL: ${VICTORIALOGS_URL:-}
+      LOG_SERVICE_NAME: ${LOG_SERVICE_NAME:-acuity-yolo}
     ports:
       - "${WORKER_HTTP_PORT:-9104}:8000"
     # ── AMD GPU (ROCm). Нужен только для DEVICE=gpu-amd. ──

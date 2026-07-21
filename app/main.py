@@ -64,7 +64,14 @@ def _load_model(settings: Settings) -> YoloModel | None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
-    setup_logging(settings.log_level)
+    setup_logging(
+        level=settings.log_level,
+        victorialogs_url=settings.victorialogs_url,
+        service_name=settings.log_service_name,
+        flush_interval=settings.log_flush_interval,
+        batch_size=settings.log_batch_size,
+        queue_max=settings.log_queue_max,
+    )
     log.info("acuity-yolo starting", extra={
         "model_path": settings.model_path,
         "ep_requested": settings.execution_provider,
