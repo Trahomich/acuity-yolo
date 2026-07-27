@@ -25,11 +25,16 @@ import urllib.request
 from typing import Any
 
 # Готовые OTLP protobuf-сообщения (из pip install opentelemetry-proto).
-# Импорты тяжёлые (~30 МБ), но ленивые — в __init__ handler'а, чтобы
-# не тащить protobuf в образы без victorialogs_url (import-time fallback).
-from opentelemetry.proto.collector.logs.v1 import logs_service_pb2 as _pb_logs_service
-from opentelemetry.proto.logs.v1 import logs_pb2 as _pb_logs
-from opentelemetry.proto.common.v1 import common_pb2 as _pb_common
+# Ленивый импорт: загружаем ПРИ ПЕРВОМ создании VictoriaLogsHandler (в __init__),
+# НЕ на module-level. Так:
+#   - app/main.py импортирует logging_setup БЕЗ protobuf → даже если пакет
+#     не установлен или версия несовместима, приложение стартует (просто
+#     без remote-логирования). Раньше module-level import убивал старт
+#     ImportError'ом → контейнер крашился до первого запроса.
+#   - protobuf-зависимость грузится только когда victorialogs_url реально задан.
+_pb_logs_service = None
+_pb_logs = None
+_pb_common = None
 
 # Имена полей выровнены с тем, как их ждёт стеклянка acuity-server
 # (component/level/msg/err/time) для единообразия логов.
@@ -103,13 +108,45 @@ class VictoriaLogsHandler(logging.Handler):
         self._stop = threading.Event()
         self._dropped = 0
         self._last_warn = 0.0
+        self._enabled = self._load_protobuf()
+        if not self._enabled:
+            # protobuf недоступен — handler бесполезен, не запускаем поток.
+            # stderr-логирование продолжает работать через JsonFormatter.
+            return
         # urllib с таймаутом, чтобы поток не завис при недоступности.
         self._thread = threading.Thread(
             target=self._run, name="victorialogs-sender", daemon=True
         )
         self._thread.start()
 
+    @staticmethod
+    def _load_protobuf() -> bool:
+        """Лениво импортирует opentelemetry-proto. Возвращает False, если пакет
+        не установлен или версия несовместима — тогда handler self-disable'ится
+        (emit становится no-op), stderr-логирование продолжает работать.
+        """
+        global _pb_logs_service, _pb_logs, _pb_common
+        try:
+            from opentelemetry.proto.collector.logs.v1 import (
+                logs_service_pb2 as svc,
+            )
+            from opentelemetry.proto.logs.v1 import logs_pb2 as logs
+            from opentelemetry.proto.common.v1 import common_pb2 as common
+            _pb_logs_service = svc
+            _pb_logs = logs
+            _pb_common = common
+            return True
+        except Exception as exc:
+            sys.stderr.write(
+                f"[victorialogs] opentelemetry-proto unavailable, "
+                f"remote logging disabled: {exc}\n"
+            )
+            sys.stderr.flush()
+            return False
+
     def emit(self, record: logging.LogRecord) -> None:
+        if not getattr(self, "_enabled", False):
+            return  # protobuf недоступен — no-op, stderr-логирование работает
         payload = _record_to_payload(record)
         try:
             self._queue.put_nowait(payload)
@@ -286,7 +323,10 @@ class VictoriaLogsHandler(logging.Handler):
             self._queue.put_nowait(None)  # разблокировать get(timeout=...)
         except queue.Full:
             pass
-        self._thread.join(timeout=self.flush_interval + 5)
+        # Поток запускается только если protobuf загрузился (_enabled=True).
+        thread = getattr(self, "_thread", None)
+        if thread is not None:
+            thread.join(timeout=self.flush_interval + 5)
         super().close()
 
 
