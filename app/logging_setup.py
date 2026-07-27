@@ -228,28 +228,53 @@ class VictoriaLogsHandler(logging.Handler):
             return False
 
     def _run(self) -> None:
-        """Главный цикл фонового потока: копит и флешит батчи."""
+        """Главный цикл фонового потока: копит и флешит батчи.
+
+        Любое исключение в _flush перехватывается — поток НЕ умирает. Раньше
+        один сбой (например protobuf-ошибка на несериализуемом значении, или
+        исключение вне catch в _post) убивал поток навсегда: очередь
+        переполнялась до queue_max и зависала, каждый последующий emit()
+        делал put_nowait→Full→stderr-warn → лишний CPU на каждый запрос.
+        Теперь разовый сбой батча логируется и цикл продолжается.
+        """
         batch: list[dict[str, Any]] = []
         while not self._stop.is_set():
             try:
                 item = self._queue.get(timeout=self.flush_interval)
             except queue.Empty:
                 if batch:
-                    self._flush(batch)
+                    self._safe_flush(batch)
                     batch = []
                 continue
             if item is None:  # sentinel для остановки
                 break
             batch.append(item)
             if len(batch) >= self.batch_size:
-                self._flush(batch)
+                self._safe_flush(batch)
                 batch = []
         # Финальный flush при остановке.
         if batch:
+            self._safe_flush(batch)
+
+    def _safe_flush(self, batch: list[dict[str, Any]]) -> None:
+        """Обёртка над _flush: ловит любые исключения, не даёт потоку умереть."""
+        try:
             self._flush(batch)
+        except Exception as exc:
+            # Лог-путь не должен ронять поток. Дропаем проблемный батч целиком
+            # и продолжаем — следующий батч отправится нормально.
+            sys.stderr.write(f"[victorialogs] flush failed, dropped {len(batch)} records: {exc}\n")
+            sys.stderr.flush()
 
     def _flush(self, batch: list[dict[str, Any]]) -> None:
-        body = self._build_otlp_payload(batch)
+        try:
+            body = self._build_otlp_payload(batch)
+        except Exception as exc:
+            # Сборка protobuf упала (несериализуемое extra-значение и т.п.) —
+            # дропаем батч, не роняя поток. Логируем для диагностики.
+            sys.stderr.write(f"[victorialogs] protobuf build failed, dropped {len(batch)} records: {exc}\n")
+            sys.stderr.flush()
+            return
         if not self._post(body):
             # При неудаче не ретраим (drop+warn стратегия) — журнал TTL/ingest
             # на стороне VictoriaLogs примет следующий батч.
