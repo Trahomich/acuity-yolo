@@ -23,6 +23,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
+import anyio
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile, status
@@ -37,6 +38,12 @@ log = logging.getLogger("acuity-yolo")
 
 # Глобальное состояние процесса: модель + настройки. Живёт всё время работы.
 _state: dict[str, object] = {"model": None}
+
+# CapacityLimiter для инференса: строго ОДНА session.run() concurrently.
+# Исключает MIOpen-гонку (find vs forward) и при этом освобождает event loop —
+# /healthz и приём новых запросов не подвисают на инференсе.
+# Параллелизм по-прежнему достигается uvicorn-воркерами/репликами.
+_INFER_LIMITER = anyio.CapacityLimiter(1)
 
 
 def _get_model() -> YoloModel:
@@ -139,19 +146,32 @@ async def detect(image: UploadFile = File(...)) -> JSONResponse:
             content={"detail": f"model not loaded; expected at {settings.model_path}"},
         )
 
-    raw = await image.read()
-
-    # ВНИМАНИЕ: decode и inference выполняются СИНХРОННО в event loop. Это
-    # намеренно, не упущение: одна ONNX-сессия НЕ потокобезопасна для
-    # конкурентных session.run() — попытка asyncio.to_thread приводила к
-    # гонке в MIOpen ("No invoker registered for conv", MIOPEN failure 7),
-    # т.к. find-фаза одного потока конкурировала с forward-фазой другого.
-    # onnxruntime отпускает GIL, но общий ROCm/MIOpen state на это не рассчитан.
-    # Параллелизм достигается uvicorn-воркерами (отдельные процессы = отдельные
-    # сессии) или репликами, а НЕ потоками одной сессии.
+    # Читаем тело запроса и сразу закрываем UploadFile — освобождаем spool
+    # (tempfile в /tmp при upload >1 MiB). Раньше не закрывался: под нагрузкой
+    # и при client-disconnect (Cloudflare 524) temp-файлы копились → FD leak.
     try:
+        raw = await image.read()
+    finally:
+        await image.close()
+
+    # decode + inference — blocking (cv2 + onnxruntime). Выполняем в потоке,
+    # но строго ОДНОВРЕМЕННО активных (CapacityLimiter(1)). Это решает обе
+    # проблемы сразу:
+    #   1) event loop свободен — /healthz, /readyz, приём новых запросов не
+    #      подвисают на инференсе (раньше синхронный session.run блокировал
+    #      всё → nginx/Cloudflare healthcheck таймаутил → upstream «умирал»).
+    #   2) MIOpen-гонка исключена: лимитер гарантирует максимум одну
+    #      session.run() concurrently, поэтому find-фаза и forward-фаза
+    #      не пересекаются (в прошлый раз asyncio.to_thread без лимита порождал
+    #      "No invoker registered for conv", MIOPEN failure 7).
+    def _decode_and_detect() -> tuple[list, int]:
         img = _decode_image(raw, settings.max_image_bytes, settings.max_image_pixels)
-        dets, inference_ms = model.detect(img)  # type: ignore[union-attr]
+        return model.detect(img)  # type: ignore[union-attr]
+
+    try:
+        dets, inference_ms = await anyio.to_thread.run_sync(
+            _decode_and_detect, limiter=_INFER_LIMITER
+        )
     except HTTPException:
         raise  # 400/413 из _decode_image — пробрасываем как есть
     except Exception:
