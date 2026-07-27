@@ -184,7 +184,15 @@ class VictoriaLogsHandler(logging.Handler):
         return request.SerializeToString()
 
     def _post(self, body: bytes) -> bool:
-        """POST protobuf-батча в OTLP endpoint. Возвращает True при успехе."""
+        """POST protobuf-батча в OTLP endpoint. Возвращает True при успехе.
+
+        Покрывает ВСЕ исключения (включая http.client.HTTPException,
+        ssl.SSLError и т.п.) и явно закрывает socket при HTTPError.
+        Старая версия ловила только (URLError, TimeoutError, OSError) —
+        HTTPError хоть и subclass URLError, но несёт свой response object
+        (exc.fp), чей socket не закрывался → утечка FD на каждом 4xx/5xx
+        (особенно 429 throttling от Cloudflare/proxy) → eventual EMFILE.
+        """
         req = urllib.request.Request(
             self.url,
             data=body,
@@ -195,7 +203,24 @@ class VictoriaLogsHandler(logging.Handler):
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return 200 <= resp.status < 300
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except urllib.error.HTTPError as exc:
+            # У HTTPError свой response (exc.fp) — его socket не закрывается
+            # with-блоком urlopen. Закрываем явно, иначе каждый 4xx/5xx
+            # ответ течёт сокетом (429 throttling → десятки утечек в минуту).
+            if exc.fp is not None:
+                try:
+                    exc.fp.close()
+                except Exception:
+                    pass
+            self._dropped += 1
+            self._maybe_warn_dropped()
+            sys.stderr.write(f"[victorialogs] POST failed: HTTP {exc.code} {exc.reason}\n")
+            sys.stderr.flush()
+            return False
+        except Exception as exc:
+            # Широкий catch: ssl.SSLError, http.client.HTTPException,
+            # ConnectionResetError и пр. — любое исключение в лог-пути не
+            # должно ронять фоновый поток (см. фикс #3 для пояса безопасности).
             self._dropped += 1
             self._maybe_warn_dropped()
             sys.stderr.write(f"[victorialogs] POST failed: {exc}\n")
