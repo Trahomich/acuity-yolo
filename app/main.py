@@ -91,6 +91,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     })
     yield
     log.info("acuity-yolo shutting down")
+    # Корректно закрываем handlers (особенно VictoriaLogsHandler с фоновым
+    # потоком). Раньше поток не закрывался → orphan-thread продолжал POST'ить
+    # в VictoriaLogs после остановки request-loop, копились сокеты при каждом
+    # рестарте/reload. close() джоинит фоновый поток (с таймаутом).
+    logging.shutdown()
 
 
 app = FastAPI(

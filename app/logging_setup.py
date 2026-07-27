@@ -303,9 +303,17 @@ def setup_logging(
     Если victorialogs_url непустой — добавляет асинхронный remote-handler.
     """
     root = logging.getLogger()
-    # Чистим хендлеры (uvicorn может навесить свои при reload).
+    # Чистим хендлеры, ПРЕДВАРИТЕЛЬНО закрывая каждый. Раньше просто
+    # removeHandler() бросал ссылку на старый VictoriaLogsHandler — его
+    # фоновый поток продолжал жить (orphan) и POST'ить в VictoriaLogs,
+    # копились сокеты и дубликаты батчей. Особенно вредно при uvicorn reload
+    # или повторных вызовах setup_logging из тестов.
     for h in list(root.handlers):
         root.removeHandler(h)
+        try:
+            h.close()
+        except Exception:
+            pass
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(JsonFormatter())
     root.addHandler(handler)
